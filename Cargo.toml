@@ -1,7 +1,12 @@
 [package]
 name = "rustune"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+description = "A terminal music player with YouTube search, local playback, and Winamp skin support"
+repository = "https://github.com/dzulfikar08/rustune"
+license = "MIT"
+keywords = ["music", "player", "terminal", "tui", "youtube"]
+categories = ["command-line-utilities", "multimedia::audio"]
 
 [dependencies]
 ratatui = "0.29"

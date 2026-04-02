@@ -1,2 +1,7 @@
 /target
 *.sock
+.DS_Store
+*.swp
+*.swo
+*~
+.env
