@@ -115,9 +115,6 @@ jobs:
           cp assets/macos/Info.plist "$APPDIR/Info.plist"
           cp assets/macos/AppIcon.icns "$APPDIR/Resources/AppIcon.icns"
 
-          # Update plist to reference icon
-          /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile AppIcon" "$APPDIR/Info.plist"
-
           # Codesign inner executables
           codesign --force --options runtime \
             -s "Developer ID Application: Dzulfikar Ats Tsauri (${APPLE_TEAM_ID})" \
