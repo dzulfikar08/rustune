@@ -14,10 +14,11 @@ pub struct SearchResult {
 }
 
 /// Search YouTube using yt-dlp. Returns up to 10 results per page.
+/// yt-dlp's `ytsearchN:` returns the top N results — there's no offset,
+/// so for page > 0 we fetch (page+1)*10 results and slice the last 10.
 pub async fn search(query: &str, page: usize) -> Result<Vec<SearchResult>> {
-    let start = page * 10 + 1;
-    let end = (page + 1) * 10;
-    let search_term = format!("ytsearch{start}-{end}:{query}");
+    let count = (page + 1) * 10;
+    let search_term = format!("ytsearch{count}:{query}");
 
     let output = tokio::time::timeout(
         Duration::from_secs(YTDLP_TIMEOUT_SECS),
@@ -49,7 +50,15 @@ pub async fn search(query: &str, page: usize) -> Result<Vec<SearchResult>> {
         }
     }
 
-    Ok(results)
+    // For page > 0, return only the slice corresponding to this page
+    let skip = page * 10;
+    if skip > 0 && results.len() > skip {
+        Ok(results.into_iter().skip(skip).take(10).collect())
+    } else if skip > 0 {
+        Ok(Vec::new()) // no results for this page
+    } else {
+        Ok(results)
+    }
 }
 
 /// Extract the best audio stream URL for a video ID.
