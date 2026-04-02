@@ -127,6 +127,8 @@ pub struct App {
     pub winamp_skin: Option<WinampSkin>,
     pub active_source: SourceKind,
     pub onboarding_step: OnboardingStep,
+    pub onboarding_dep_selected: usize, // 0 = mpv, 1 = yt-dlp
+    pub pending_install: Option<usize>,  // Some(0) = mpv, Some(1) = yt-dlp
     pub settings_field: SettingsField,
     #[allow(dead_code)]
     pub settings_list_state: ListState,
@@ -206,6 +208,8 @@ impl App {
             winamp_skin: None, // loaded lazily when Winamp theme is selected
             active_source: SourceKind::Local,
             onboarding_step: OnboardingStep::Welcome,
+            onboarding_dep_selected: 0,
+            pending_install: None,
             settings_field: SettingsField::MusicDir,
             settings_list_state,
             skin_entries: Vec::new(),
@@ -543,6 +547,18 @@ impl App {
                 _ => OnboardingAction::None,
             },
             OnboardingStep::Dependencies => match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.onboarding_dep_selected = (self.onboarding_dep_selected + 1) % 2;
+                    OnboardingAction::None
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.onboarding_dep_selected = (self.onboarding_dep_selected + 1) % 2;
+                    OnboardingAction::None
+                }
+                KeyCode::Char('i') => {
+                    self.pending_install = Some(self.onboarding_dep_selected);
+                    OnboardingAction::None
+                }
                 KeyCode::Enter | KeyCode::Char(' ') => {
                     self.onboarding_step = OnboardingStep::MusicDir;
                     OnboardingAction::Next

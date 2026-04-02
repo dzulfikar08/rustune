@@ -225,6 +225,41 @@ async fn run(mut terminal: DefaultTerminal, config: config::Config) -> Result<()
     loop {
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
 
+        // Check for pending dependency install (must happen outside terminal.draw)
+        if let Some(dep_idx) = app.pending_install.take() {
+            let (mpv_cmd, ytdlp_cmd) = get_install_commands();
+            let (label, cmd) = if dep_idx == 0 {
+                ("mpv", mpv_cmd)
+            } else {
+                ("yt-dlp", ytdlp_cmd)
+            };
+
+            if let Some((program, args)) = cmd {
+                let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                let (success, new_terminal) = install_dependency(label, &program, &args_ref);
+                terminal = new_terminal;
+                if success {
+                    app.status = Status::Idle;
+                } else {
+                    app.status = Status::Error(format!("{label} installation failed"));
+                }
+            } else {
+                // No auto-install available (e.g. Windows)
+                ratatui::restore();
+                if dep_idx == 0 {
+                    println!("\n  Please install mpv manually from https://mpv.io");
+                } else {
+                    println!("\n  Please install yt-dlp manually from https://github.com/yt-dlp/yt-dlp");
+                }
+                println!("\nPress Enter to return to rustune...");
+                let mut buf = String::new();
+                let _ = std::io::stdin().read_line(&mut buf);
+                terminal = ratatui::init();
+                let _ = crossterm::execute!(std::io::stdout(), EnableMouseCapture);
+            }
+            continue;
+        }
+
         tokio::select! {
             Some(term_event) = rx_term.recv() => {
                 match term_event {
@@ -730,6 +765,89 @@ fn handle_mouse(
         }
         MouseAction::ScrollUp | MouseAction::ScrollDown | MouseAction::SelectResult(_) | MouseAction::None => {}
     }
+}
+
+/// Suspend the TUI, run an install command in the terminal, then resume.
+/// Returns (success, new_terminal).
+fn install_dependency(label: &str, program: &str, args: &[&str]) -> (bool, DefaultTerminal) {
+    // Restore terminal so user can see the install output
+    ratatui::restore();
+
+    let args_str = args.join(" ");
+    println!("\nInstalling {label}...");
+    println!("  $ {program} {args_str}");
+
+    let success = match std::process::Command::new(program)
+        .args(args)
+        .status()
+    {
+        Ok(status) if status.success() => {
+            println!("\n  {label} installed successfully.");
+            true
+        }
+        Ok(status) => {
+            println!("\n  Installation failed with exit code: {}", status.code().unwrap_or(-1));
+            false
+        }
+        Err(e) => {
+            println!("\n  Failed to run install command: {e}");
+            false
+        }
+    };
+
+    println!("\nPress Enter to return to rustune...");
+    let mut buf = String::new();
+    let _ = std::io::stdin().read_line(&mut buf);
+
+    // Re-initialize terminal
+    let terminal = ratatui::init();
+    let _ = crossterm::execute!(std::io::stdout(), EnableMouseCapture);
+
+    (success, terminal)
+}
+
+#[cfg(unix)]
+fn get_install_commands() -> (Option<(String, Vec<String>)>, Option<(String, Vec<String>)>) {
+    // mpv install command
+    let mpv_cmd = if std::path::Path::new("/opt/homebrew/bin/brew").exists()
+        || which_exists("brew")
+    {
+        Some(("brew".to_string(), vec!["install".to_string(), "mpv".to_string()]))
+    } else if which_exists("apt") {
+        Some(("sudo".to_string(), vec!["apt".to_string(), "install".to_string(), "-y".to_string(), "mpv".to_string()]))
+    } else {
+        None
+    };
+
+    // yt-dlp install command
+    let ytdlp_cmd = if std::path::Path::new("/opt/homebrew/bin/brew").exists()
+        || which_exists("brew")
+    {
+        Some(("brew".to_string(), vec!["install".to_string(), "yt-dlp".to_string()]))
+    } else if which_exists("pipx") {
+        Some(("pipx".to_string(), vec!["install".to_string(), "yt-dlp".to_string()]))
+    } else if which_exists("pip") {
+        Some(("pip".to_string(), vec!["install".to_string(), "yt-dlp".to_string()]))
+    } else {
+        None
+    };
+
+    (mpv_cmd, ytdlp_cmd)
+}
+
+#[cfg(not(unix))]
+fn get_install_commands() -> (Option<(String, Vec<String>)>, Option<(String, Vec<String>)>) {
+    // No auto-install on Windows
+    (None, None)
+}
+
+#[cfg(unix)]
+fn which_exists(cmd: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(cmd)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// Try to load a .wsz skin file. Checks:

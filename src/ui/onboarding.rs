@@ -32,7 +32,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     match app.onboarding_step {
         OnboardingStep::Welcome => render_welcome(frame, chunks[1], theme),
-        OnboardingStep::Dependencies => render_dependencies(frame, chunks[1], theme),
+        OnboardingStep::Dependencies => render_dependencies(frame, chunks[1], app, theme),
         OnboardingStep::MusicDir => render_music_dir(frame, chunks[1], app, theme),
         OnboardingStep::Theme => render_theme_selection(frame, chunks[1], app, theme),
     }
@@ -77,7 +77,7 @@ fn render_welcome(frame: &mut Frame, area: Rect, theme: &Theme) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn render_dependencies(frame: &mut Frame, area: Rect, theme: &Theme) {
+fn render_dependencies(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     // Check mpv status
     let mpv_status = match std::process::Command::new("mpv").arg("--version").output() {
         Ok(o) if o.status.success() => {
@@ -97,18 +97,34 @@ fn render_dependencies(frame: &mut Frame, area: Rect, theme: &Theme) {
         _ => (false, "Not found".into()),
     };
 
-    let check = |found: bool, name: &str, version: &str| -> Line<'static> {
-        let (mark, style) = if found {
+    let dep_line = |found: bool, name: &str, version: &str, selected: bool| -> Line<'static> {
+        let (mark, mark_style) = if found {
             ("\u{2713}", Style::default().fg(ratatui::style::Color::Green))
         } else {
             ("\u{2717}", theme.error_text)
         };
-        Line::from(vec![
-            Span::styled(format!("  {mark} "), style),
+        let prefix = if selected { " >> " } else { "    " };
+        let sel_style = if selected {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+
+        let mut spans = vec![
+            Span::styled(prefix.to_string(), sel_style),
+            Span::styled(format!("{mark} "), mark_style),
             Span::styled(format!("{name}: "), theme.result_title),
             Span::styled(version.to_string(), theme.result_duration),
-        ])
+        ];
+
+        if selected && !found {
+            spans.push(Span::styled("  [i] install", theme.help_key));
+        }
+
+        Line::from(spans)
     };
+
+    let sel = app.onboarding_dep_selected;
 
     let lines = vec![
         Line::from(""),
@@ -117,11 +133,11 @@ fn render_dependencies(frame: &mut Frame, area: Rect, theme: &Theme) {
             Style::default().add_modifier(Modifier::BOLD).fg(ratatui::style::Color::Cyan),
         )),
         Line::from(""),
-        check(mpv_status.0, "mpv (required)", &mpv_status.1),
-        check(ytdlp_status.0, "yt-dlp (optional, for online search)", &ytdlp_status.1),
+        dep_line(mpv_status.0, "mpv (required)", &mpv_status.1, sel == 0),
+        dep_line(ytdlp_status.0, "yt-dlp (optional, for online search)", &ytdlp_status.1, sel == 1),
         Line::from(""),
         Line::from(Span::styled(
-            "  Press Enter to continue...",
+            "  j/k: select | i: install | Enter: continue",
             theme.help_key,
         )),
     ];
