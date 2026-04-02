@@ -103,16 +103,12 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           chmod +x ${{ matrix.artifact }}
-          zip rustune.zip ${{ matrix.artifact }}
+          ditto -c -k --keepParent ${{ matrix.artifact }} rustune.zip
           xcrun notarytool submit rustune.zip \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
             --wait
-
-      - name: Staple
-        run: |
-          xcrun stapler staple ${{ matrix.artifact }}
 
       - uses: actions/upload-artifact@v4
         with:
