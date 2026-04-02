@@ -30,8 +30,143 @@ fn main() -> Result<()> {
         default_panic(info);
     }));
 
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async_main())
+    let args: Vec<String> = std::env::args().collect();
+    let program = args.get(0).map(|s| s.as_str()).unwrap_or("rustune");
+
+    match args.get(1).map(|s| s.as_str()) {
+        Some("--help") | Some("-h") => {
+            print_help(program);
+            Ok(())
+        }
+        Some("--version") | Some("-V") => {
+            println!("rustune {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
+        Some("doctor") => {
+            let runtime = tokio::runtime::Runtime::new()?;
+            runtime.block_on(run_doctor());
+            Ok(())
+        }
+        Some(other) => {
+            eprintln!("Unknown argument: {other}");
+            eprintln!("Run '{program} --help' for usage.");
+            std::process::exit(1);
+        }
+        None => {
+            let runtime = tokio::runtime::Runtime::new()?;
+            runtime.block_on(async_main())
+        }
+    }
+}
+
+fn print_help(program: &str) {
+    println!(
+        "rustune {} — terminal music player
+
+USAGE:
+    {program}              Launch the TUI
+    {program} doctor       Check dependencies and system status
+    {program} --help       Show this help message
+    {program} --version    Show version
+
+KEYBINDINGS (inside TUI):
+    /          Search
+    j/k        Move up/down
+    Space      Toggle pause
+    Enter      Play selected
+    Tab        Switch source (Local / Online)
+    s          Settings
+    q          Quit
+
+CONFIG:
+    ~/.config/rustune/config.toml
+
+MORE:
+    https://rustune.dzulfikar.com",
+        env!("CARGO_PKG_VERSION"),
+    );
+}
+
+async fn run_doctor() {
+    println!("rustune {} — doctor\n", env!("CARGO_PKG_VERSION"));
+
+    // Check mpv
+    let mpv_ok = match player::check_mpv().await {
+        Ok(()) => {
+            // Try to get version
+            let output = tokio::process::Command::new("mpv")
+                .arg("--version")
+                .output()
+                .await
+                .ok();
+            let version = output
+                .and_then(|o| {
+                    let stdout = String::from_utf8_lossy(&o.stdout);
+                    let first_line = stdout.lines().next().unwrap_or("");
+                    Some(first_line.to_string())
+                })
+                .unwrap_or_else(|| "unknown".to_string());
+            println!("  [ok] mpv: {}", version.split_whitespace().take(2).collect::<Vec<_>>().join(" "));
+            true
+        }
+        Err(e) => {
+            println!("  [MISSING] mpv: {e}");
+            println!("            Install from: https://mpv.io");
+            false
+        }
+    };
+
+    // Check yt-dlp
+    let ytdlp_ok = match std::process::Command::new("yt-dlp")
+        .arg("--version")
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            println!("  [ok] yt-dlp: {version}");
+            true
+        }
+        Ok(_) => {
+            println!("  [BROKEN] yt-dlp: installed but not working");
+            false
+        }
+        Err(_) => {
+            println!("  [MISSING] yt-dlp: not found");
+            println!("            Install from: https://github.com/yt-dlp/yt-dlp");
+            false
+        }
+    };
+
+    // Check config directory
+    let config_dir = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
+        .join("rustune");
+    if config_dir.exists() {
+        println!("  [ok] config: {}", config_dir.display());
+    } else {
+        println!("  [--] config: {} (will be created on first run)", config_dir.display());
+    }
+
+    // Check music directory
+    let music_dir = dirs::audio_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join("Music")))
+        .unwrap_or_else(|| std::path::PathBuf::from("~/Music"));
+    if music_dir.exists() {
+        println!("  [ok] music dir: {}", music_dir.display());
+    } else {
+        println!("  [--] music dir: {} (not found)", music_dir.display());
+    }
+
+    println!();
+
+    if mpv_ok && ytdlp_ok {
+        println!("All good! Run 'rustune' to start playing.");
+    } else if mpv_ok {
+        println!("mpv is ready. Install yt-dlp for online audio search.");
+    } else {
+        println!("mpv is required for playback. Install it first.");
+        std::process::exit(1);
+    }
 }
 
 async fn async_main() -> Result<()> {

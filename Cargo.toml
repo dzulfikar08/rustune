@@ -2,10 +2,11 @@
 name = "rustune"
 version = "0.2.0"
 edition = "2021"
-description = "A terminal music player with YouTube search, local playback, and Winamp skin support"
+description = "A terminal music player with online audio search, local playback, and Winamp skin support"
 repository = "https://github.com/dzulfikar08/rustune"
+homepage = "https://rustune.dzulfikar.com"
 license = "MIT"
-keywords = ["music", "player", "terminal", "tui", "youtube"]
+keywords = ["music", "player", "terminal", "tui", "audio"]
 categories = ["command-line-utilities", "multimedia::audio"]
 
 [dependencies]
