@@ -29,7 +29,7 @@ pub async fn play(
     tx: mpsc::UnboundedSender<AppEvent>,
     mut kill_rx: oneshot::Receiver<()>,
 ) {
-    let socket_path = format!("/tmp/litetube-mpv-{}.sock", std::process::id());
+    let socket_path = format!("/tmp/rustune-mpv-{}.sock", std::process::id());
     let _ = std::fs::remove_file(&socket_path);
 
     let child = match tokio::process::Command::new("mpv")
@@ -161,9 +161,30 @@ pub async fn play(
     let _ = tx.send(AppEvent::PlaybackComplete);
 }
 
+/// Seek to a specific position (in seconds) via mpv IPC.
+pub async fn seek_to(position_secs: f64) -> Result<()> {
+    let socket_path = format!("/tmp/rustune-mpv-{}.sock", std::process::id());
+
+    let stream = UnixStream::connect(&socket_path)
+        .await
+        .context("Failed to connect to mpv IPC socket")?;
+
+    let (_, mut writer) = stream.into_split();
+
+    let request = format!(
+        r#"{{"command":["set_property","time-pos",{position_secs}]}}"#
+    );
+    writer
+        .write_all(format!("{request}\n").as_bytes())
+        .await?;
+    writer.flush().await?;
+
+    Ok(())
+}
+
 /// Set pause state on the mpv IPC socket.
 pub async fn set_pause(paused: bool) -> Result<()> {
-    let socket_path = format!("/tmp/litetube-mpv-{}.sock", std::process::id());
+    let socket_path = format!("/tmp/rustune-mpv-{}.sock", std::process::id());
 
     let stream = UnixStream::connect(&socket_path)
         .await

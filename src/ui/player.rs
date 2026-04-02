@@ -1,14 +1,20 @@
 use ratatui::{
-    style::{Color, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{LineGauge, Paragraph},
     Frame,
 };
 
 use crate::app::{App, PlaybackState, Status};
 
-pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
-    let content = match &app.playback {
+pub fn render(
+    frame: &mut Frame,
+    info_area: ratatui::layout::Rect,
+    gauge_area: ratatui::layout::Rect,
+    app: &App,
+) {
+    let theme = &app.theme;
+
+    match &app.playback {
         Some(PlaybackState {
             title,
             duration_secs,
@@ -17,43 +23,50 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
         }) => {
             let elapsed_str = App::format_duration(*elapsed_secs);
             let duration_str = App::format_duration(*duration_secs);
-            let state_icon = if *paused { "||" } else { ">>" };
 
-            // Progress bar
-            let pct = if *duration_secs > 0 {
+            let (btn_text, btn_style) = if *paused {
+                (" \u{25B6} ", theme.player_button_play)
+            } else {
+                (" \u{23F8} ", theme.player_button_pause)
+            };
+
+            let info = Line::from(vec![
+                Span::styled(btn_text.to_string(), btn_style),
+                Span::styled(" ", ratatui::style::Style::default()),
+                Span::styled(truncate(title, 50), theme.player_title),
+                Span::styled(
+                    format!("  {elapsed_str}/{duration_str}"),
+                    theme.player_time,
+                ),
+            ]);
+            frame.render_widget(Paragraph::new(info), info_area);
+
+            let ratio = if *duration_secs > 0 {
                 *elapsed_secs as f64 / *duration_secs as f64
             } else {
                 0.0
             };
-            let bar_width = 20;
-            let filled = (pct * bar_width as f64).round() as usize;
-            let bar: String = "=".repeat(filled) + "-".repeat(bar_width - filled).as_str();
 
-            vec![Line::from(vec![
-                Span::styled(format!(" {state_icon} "), Style::default().fg(Color::Cyan)),
-                Span::styled(
-                    truncate(title, 40),
-                    Style::default().fg(Color::Cyan),
-                ),
-                Span::styled(
-                    format!(" [{bar}] {elapsed_str}/{duration_str}"),
-                    Style::default().fg(Color::Green),
-                ),
-            ])]
+            let pct_str = format!("{:.0}%", ratio * 100.0);
+            let gauge = LineGauge::default()
+                .ratio(ratio)
+                .label(Span::styled(pct_str, theme.gauge_label))
+                .filled_style(theme.gauge_filled)
+                .unfilled_style(theme.gauge_unfilled)
+                .line_set(ratatui::symbols::line::THICK);
+
+            frame.render_widget(gauge, gauge_area);
         }
         None => match &app.status {
             Status::Loading(text) => {
-                vec![Line::from(Span::styled(
-                    format!(" {text}"),
-                    Style::default().fg(Color::Yellow),
-                ))]
+                let info = Line::from(Span::styled(format!(" {text}"), theme.loading_text));
+                frame.render_widget(Paragraph::new(info), info_area);
             }
-            _ => vec![Line::from("")],
+            _ => {
+                frame.render_widget(Paragraph::new(Line::from("")), info_area);
+            }
         },
-    };
-
-    let paragraph = Paragraph::new(content);
-    frame.render_widget(paragraph, area);
+    }
 }
 
 fn truncate(s: &str, max_len: usize) -> String {
@@ -61,7 +74,7 @@ fn truncate(s: &str, max_len: usize) -> String {
         s.to_string()
     } else {
         let mut truncated: String = s.chars().take(max_len - 1).collect();
-        truncated.push('…');
+        truncated.push('\u{2026}');
         truncated
     }
 }

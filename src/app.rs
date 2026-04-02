@@ -1,11 +1,19 @@
+use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::{Position, Rect};
 use ratatui::widgets::ListState;
 
-use crate::youtube::SearchResult;
+use crate::config::Config;
+use crate::media::{MediaItem, SourceKind};
+use crate::skin::WinampSkin;
+use crate::theme::Theme;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
     Browse,
     Input,
+    Settings,
+    Onboarding,
+    SkinBrowser,
 }
 
 #[derive(Debug, Clone)]
@@ -13,6 +21,7 @@ pub enum Status {
     Idle,
     Searching(String),
     Loading(String),
+    Scanning(String),
     Error(String),
 }
 
@@ -24,28 +33,124 @@ pub struct PlaybackState {
     pub paused: bool,
 }
 
+/// Stored layout rects for mouse hit-testing.
+#[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
+pub struct LayoutRects {
+    pub results: Rect,
+    pub player_info: Rect,
+    pub player_bar: Rect,
+    pub input: Rect,
+    pub help: Rect,
+    pub pause_button: Rect,
+    pub prev_page: Rect,
+    pub next_page: Rect,
+}
+
+/// Actions returned by mouse handler.
+#[allow(dead_code)]
+pub enum MouseAction {
+    None,
+    SelectResult(usize),
+    PlaySelected,
+    Seek(f64),
+    TogglePause,
+    PrevPage,
+    NextPage,
+    ScrollUp,
+    ScrollDown,
+}
+
+/// Onboarding step (first-run only).
+#[derive(Debug, Clone, PartialEq)]
+pub enum OnboardingStep {
+    Welcome,
+    Dependencies,
+    MusicDir,
+    Theme,
+}
+
+/// Settings field being edited.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SettingsField {
+    MusicDir,
+    Extensions,
+    Theme,
+    PageSize,
+    Extractor,
+}
+
+/// A single entry in the skin browser.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct SkinEntry {
+    pub md5: String,
+    pub filename: String,
+    pub display_name: String,
+    pub is_local: bool,
+    pub nsfw: bool,
+}
+
+/// Actions returned by skin browser key handler.
+pub enum SkinBrowserAction {
+    None,
+    Back,
+    Download(String, String), // md5, filename
+    LoadLocal(String),        // filename
+    RequestFetch,
+}
+
+/// Which skin browser mode is active.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SkinBrowserSource {
+    Local,
+    Online,
+}
+
 pub struct App {
     pub mode: Mode,
-    pub results: Vec<SearchResult>,
+    pub results: Vec<MediaItem>,
     pub list_state: ListState,
     pub page: usize,
     pub input_text: String,
-    pub input_cursor: usize, // char index within input_text
+    pub input_cursor: usize,
     pub input_history: Vec<String>,
     pub history_index: usize,
     pub playback: Option<PlaybackState>,
     pub status: Status,
     pub should_quit: bool,
     pub mpv_kill: Option<tokio::sync::oneshot::Sender<()>>,
+    pub layout_rects: LayoutRects,
+    // New fields
+    pub config: Config,
+    pub theme: Theme,
+    pub winamp_skin: Option<WinampSkin>,
+    pub active_source: SourceKind,
+    pub onboarding_step: OnboardingStep,
+    pub settings_field: SettingsField,
+    #[allow(dead_code)]
+    pub settings_list_state: ListState,
+    // Skin browser
+    pub skin_entries: Vec<SkinEntry>,
+    pub skin_list_state: ListState,
+    pub skin_browser_loading: bool,
+    pub skin_browser_error: Option<String>,
+    pub skin_browser_offset: usize,
+    pub skin_browser_has_more: bool,
+    pub skin_downloading_md5: Option<String>,
+    pub skin_total_count: usize,
+    pub skin_browser_source: SkinBrowserSource,
 }
 
 // Actions returned by key handlers
 pub enum BrowseAction {
     None,
-    Play(String, String), // video_id, title
+    Play(String, String), // id, title
     NextPage,
     PrevPage,
     TogglePause,
+    OpenSettings,
+    SwitchSource,
 }
 
 pub enum InputAction {
@@ -53,12 +158,37 @@ pub enum InputAction {
     Search(String),
 }
 
+pub enum SettingsAction {
+    None,
+    Quit,
+    ThemeChanged,
+    OpenSkinBrowserLocal,
+    OpenSkinBrowserOnline,
+}
+
+pub enum OnboardingAction {
+    None,
+    Next,
+    SetMusicDir(String),
+    SelectTheme(String),
+}
+
 impl App {
-    pub fn new() -> Self {
+    pub fn new(config: Config) -> Self {
+        let theme = Theme::from_name(&config.theme);
         let mut list_state = ListState::default();
         list_state.select(Some(0));
+        let mut settings_list_state = ListState::default();
+        settings_list_state.select(Some(0));
+        let mut skin_list_state = ListState::default();
+        skin_list_state.select(Some(0));
+
         Self {
-            mode: Mode::Browse,
+            mode: if config.onboarding_done {
+                Mode::Browse
+            } else {
+                Mode::Onboarding
+            },
             results: Vec::new(),
             list_state,
             page: 0,
@@ -70,6 +200,23 @@ impl App {
             status: Status::Idle,
             should_quit: false,
             mpv_kill: None,
+            layout_rects: LayoutRects::default(),
+            config,
+            theme,
+            winamp_skin: None, // loaded lazily when Winamp theme is selected
+            active_source: SourceKind::Local,
+            onboarding_step: OnboardingStep::Welcome,
+            settings_field: SettingsField::MusicDir,
+            settings_list_state,
+            skin_entries: Vec::new(),
+            skin_list_state,
+            skin_browser_loading: false,
+            skin_browser_error: None,
+            skin_browser_offset: 0,
+            skin_browser_has_more: true,
+            skin_downloading_md5: None,
+            skin_total_count: 0,
+            skin_browser_source: SkinBrowserSource::Local,
         }
     }
 
@@ -109,7 +256,7 @@ impl App {
         }
     }
 
-    pub fn selected_result(&self) -> Option<&SearchResult> {
+    pub fn selected_result(&self) -> Option<&MediaItem> {
         self.list_state.selected().map(|i| &self.results[i])
     }
 
@@ -137,7 +284,6 @@ impl App {
     ) -> BrowseAction {
         use crossterm::event::{KeyCode, KeyModifiers};
 
-        // Ctrl+C always quits
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.kill_mpv();
             self.should_quit = true;
@@ -175,6 +321,8 @@ impl App {
             KeyCode::Char('n') => BrowseAction::NextPage,
             KeyCode::Char('p') => BrowseAction::PrevPage,
             KeyCode::Char(' ') => BrowseAction::TogglePause,
+            KeyCode::Char('s') | KeyCode::Char('S') => BrowseAction::OpenSettings,
+            KeyCode::Tab => BrowseAction::SwitchSource,
             KeyCode::Enter => {
                 if let Some(result) = self.selected_result() {
                     BrowseAction::Play(result.id.clone(), result.title.clone())
@@ -203,13 +351,11 @@ impl App {
                     return InputAction::None;
                 }
 
-                // Add to history (skip duplicates)
                 if self.input_history.last().map(|s| s.as_str()) != Some(text.as_str()) {
                     self.input_history.push(text.clone());
                 }
                 self.history_index = self.input_history.len();
 
-                // Check for commands (: prefix)
                 if let Some(cmd) = text.strip_prefix(':') {
                     match cmd.trim() {
                         "q" | "quit" => {
@@ -289,7 +435,6 @@ impl App {
                 InputAction::None
             }
             KeyCode::Char(c) => {
-                // Handle Ctrl+A, Ctrl+E, Ctrl+U inside Char arm
                 if key.modifiers.contains(KeyModifiers::CONTROL) {
                     match c {
                         'a' => self.input_cursor = 0,
@@ -303,7 +448,6 @@ impl App {
                     return InputAction::None;
                 }
 
-                // Normal character insertion
                 if let Some((idx, _)) = self.input_text.char_indices().nth(self.input_cursor) {
                     self.input_text.insert(idx, c);
                 } else {
@@ -313,6 +457,311 @@ impl App {
                 InputAction::None
             }
             _ => InputAction::None,
+        }
+    }
+
+    pub fn handle_settings_key(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+    ) -> SettingsAction {
+        use crossterm::event::KeyCode;
+
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.mode = Mode::Browse;
+                SettingsAction::Quit
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.settings_field = match self.settings_field {
+                    SettingsField::MusicDir => SettingsField::Extensions,
+                    SettingsField::Extensions => SettingsField::Theme,
+                    SettingsField::Theme => SettingsField::PageSize,
+                    SettingsField::PageSize => SettingsField::Extractor,
+                    SettingsField::Extractor => SettingsField::MusicDir,
+                };
+                SettingsAction::None
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.settings_field = match self.settings_field {
+                    SettingsField::MusicDir => SettingsField::Extractor,
+                    SettingsField::Extensions => SettingsField::MusicDir,
+                    SettingsField::Theme => SettingsField::Extensions,
+                    SettingsField::PageSize => SettingsField::Theme,
+                    SettingsField::Extractor => SettingsField::PageSize,
+                };
+                SettingsAction::None
+            }
+            KeyCode::Enter => {
+                if self.settings_field == SettingsField::Theme {
+                    // Always cycle through built-in themes
+                    let builtins = Theme::builtins();
+                    let current_idx = builtins
+                        .iter()
+                        .position(|t| t.name == self.theme.name)
+                        .unwrap_or(0);
+                    let next_idx = (current_idx + 1) % builtins.len();
+                    self.theme = builtins[next_idx].clone();
+                    self.config.theme = self.theme.name.clone();
+
+                    // Load/unload Winamp skin when switching to/from Winamp theme
+                    if self.theme.name == "Winamp" && self.winamp_skin.is_none() {
+                        return SettingsAction::ThemeChanged;
+                    } else if self.theme.name != "Winamp" {
+                        self.winamp_skin = None;
+                    }
+                }
+                SettingsAction::None
+            }
+            KeyCode::Char('i') => {
+                if self.settings_field == SettingsField::Theme && self.theme.name == "Winamp" {
+                    return SettingsAction::OpenSkinBrowserLocal;
+                }
+                SettingsAction::None
+            }
+            KeyCode::Char('o') => {
+                if self.settings_field == SettingsField::Theme && self.theme.name == "Winamp" {
+                    return SettingsAction::OpenSkinBrowserOnline;
+                }
+                SettingsAction::None
+            }
+            _ => SettingsAction::None,
+        }
+    }
+
+    pub fn handle_onboarding_key(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+    ) -> OnboardingAction {
+        use crossterm::event::KeyCode;
+
+        match self.onboarding_step {
+            OnboardingStep::Welcome => match key.code {
+                KeyCode::Enter | KeyCode::Char(' ') => {
+                    self.onboarding_step = OnboardingStep::Dependencies;
+                    OnboardingAction::Next
+                }
+                _ => OnboardingAction::None,
+            },
+            OnboardingStep::Dependencies => match key.code {
+                KeyCode::Enter | KeyCode::Char(' ') => {
+                    self.onboarding_step = OnboardingStep::MusicDir;
+                    OnboardingAction::Next
+                }
+                _ => OnboardingAction::None,
+            },
+            OnboardingStep::MusicDir => match key.code {
+                KeyCode::Enter => {
+                    let dir = if self.input_text.trim().is_empty() {
+                        self.config.music_dir.to_string_lossy().to_string()
+                    } else {
+                        self.input_text.trim().to_string()
+                    };
+                    self.input_text.clear();
+                    self.input_cursor = 0;
+                    self.onboarding_step = OnboardingStep::Theme;
+                    OnboardingAction::SetMusicDir(dir)
+                }
+                KeyCode::Esc => {
+                    self.input_text.clear();
+                    self.input_cursor = 0;
+                    self.onboarding_step = OnboardingStep::Theme;
+                    OnboardingAction::Next
+                }
+                KeyCode::Backspace => {
+                    if self.input_cursor > 0 {
+                        self.input_cursor -= 1;
+                        if let Some((idx, _)) = self.input_text.char_indices().nth(self.input_cursor) {
+                            self.input_text.remove(idx);
+                        }
+                    }
+                    OnboardingAction::None
+                }
+                KeyCode::Char(c) => {
+                    if let Some((idx, _)) = self.input_text.char_indices().nth(self.input_cursor) {
+                        self.input_text.insert(idx, c);
+                    } else {
+                        self.input_text.push(c);
+                    }
+                    self.input_cursor += 1;
+                    OnboardingAction::None
+                }
+                _ => OnboardingAction::None,
+            },
+            OnboardingStep::Theme => {
+                let builtins = Theme::builtins();
+                match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        let current_idx = builtins
+                            .iter()
+                            .position(|t| t.name == self.theme.name)
+                            .unwrap_or(0);
+                        let next_idx = (current_idx + 1) % builtins.len();
+                        self.theme = builtins[next_idx].clone();
+                        OnboardingAction::None
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        let current_idx = builtins
+                            .iter()
+                            .position(|t| t.name == self.theme.name)
+                            .unwrap_or(0);
+                        let next_idx = if current_idx == 0 {
+                            builtins.len() - 1
+                        } else {
+                            current_idx - 1
+                        };
+                        self.theme = builtins[next_idx].clone();
+                        OnboardingAction::None
+                    }
+                    KeyCode::Enter => {
+                        self.config.theme = self.theme.name.clone();
+                        self.config.onboarding_done = true;
+                        self.mode = Mode::Browse;
+                        OnboardingAction::SelectTheme(self.theme.name.clone())
+                    }
+                    _ => OnboardingAction::None,
+                }
+            }
+        }
+    }
+
+    pub fn handle_skin_browser_key(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+    ) -> SkinBrowserAction {
+        use crossterm::event::KeyCode;
+
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.mode = Mode::Settings;
+                SkinBrowserAction::Back
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !self.skin_entries.is_empty() {
+                    let i = match self.skin_list_state.selected() {
+                        Some(i) if i >= self.skin_entries.len() - 1 => 0,
+                        Some(i) => i + 1,
+                        None => 0,
+                    };
+                    self.skin_list_state.select(Some(i));
+                }
+                SkinBrowserAction::None
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if !self.skin_entries.is_empty() {
+                    let i = match self.skin_list_state.selected() {
+                        Some(0) => self.skin_entries.len() - 1,
+                        Some(i) => i - 1,
+                        None => 0,
+                    };
+                    self.skin_list_state.select(Some(i));
+                }
+                SkinBrowserAction::None
+            }
+            KeyCode::Char('g') | KeyCode::Home => {
+                if !self.skin_entries.is_empty() {
+                    self.skin_list_state.select(Some(0));
+                }
+                SkinBrowserAction::None
+            }
+            KeyCode::Char('G') | KeyCode::End => {
+                if !self.skin_entries.is_empty() {
+                    self.skin_list_state.select(Some(self.skin_entries.len() - 1));
+                }
+                SkinBrowserAction::None
+            }
+            KeyCode::Enter => {
+                if let Some(i) = self.skin_list_state.selected() {
+                    if let Some(entry) = self.skin_entries.get(i) {
+                        if entry.is_local {
+                            return SkinBrowserAction::LoadLocal(
+                                entry.filename.clone(),
+                            );
+                        } else if self.skin_downloading_md5.is_none() {
+                            self.skin_downloading_md5 = Some(entry.md5.clone());
+                            return SkinBrowserAction::Download(
+                                entry.md5.clone(),
+                                entry.filename.clone(),
+                            );
+                        }
+                    }
+                }
+                SkinBrowserAction::None
+            }
+            KeyCode::Char('n') => {
+                if self.skin_browser_has_more && !self.skin_browser_loading {
+                    self.skin_browser_offset += self.skin_entries.len().max(20);
+                    return SkinBrowserAction::RequestFetch;
+                }
+                SkinBrowserAction::None
+            }
+            _ => SkinBrowserAction::None,
+        }
+    }
+
+    pub fn handle_mouse(&mut self, event: MouseEvent) -> MouseAction {
+        let col = event.column;
+        let row = event.row;
+
+        match event.kind {
+            MouseEventKind::ScrollUp => {
+                self.select_prev();
+                MouseAction::None
+            }
+            MouseEventKind::ScrollDown => {
+                self.select_next();
+                MouseAction::None
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                let rects = &self.layout_rects;
+
+                if rects.pause_button.area() > 0
+                    && rects.pause_button.contains(Position::new(col, row))
+                    && self.playback.is_some()
+                {
+                    return MouseAction::TogglePause;
+                }
+
+                if rects.prev_page.area() > 0
+                    && rects.prev_page.contains(Position::new(col, row))
+                {
+                    return MouseAction::PrevPage;
+                }
+
+                if rects.next_page.area() > 0
+                    && rects.next_page.contains(Position::new(col, row))
+                {
+                    return MouseAction::NextPage;
+                }
+
+                if rects.results.area() > 0 && rects.results.contains(Position::new(col, row)) {
+                    let inner_row = row as usize;
+                    if inner_row > rects.results.y as usize + 1
+                        && inner_row < (rects.results.y + rects.results.height) as usize
+                    {
+                        let idx = inner_row - rects.results.y as usize - 1;
+                        if idx < self.results.len() {
+                            self.list_state.select(Some(idx));
+                            return MouseAction::PlaySelected;
+                        }
+                    }
+                    return MouseAction::None;
+                }
+
+                if rects.player_bar.area() > 0 && rects.player_bar.contains(Position::new(col, row)) {
+                    if let Some(ref playback) = self.playback {
+                        if playback.duration_secs > 0 {
+                            let bar_x = col as f64 - rects.player_bar.x as f64;
+                            let ratio = (bar_x / rects.player_bar.width as f64).clamp(0.0, 1.0);
+                            let seek_pos = ratio * playback.duration_secs as f64;
+                            return MouseAction::Seek(seek_pos);
+                        }
+                    }
+                    return MouseAction::None;
+                }
+
+                MouseAction::None
+            }
+            _ => MouseAction::None,
         }
     }
 }
