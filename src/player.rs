@@ -25,11 +25,11 @@ pub async fn check_mpv() -> Result<()> {
 /// Stops if `kill_rx` receives a signal.
 pub async fn play(
     url: String,
-    title: String,
+    _title: String,
     tx: mpsc::UnboundedSender<AppEvent>,
     mut kill_rx: oneshot::Receiver<()>,
 ) {
-    let socket_path = format!("/tmp/yewtube-mpv-{}.sock", std::process::id());
+    let socket_path = format!("/tmp/litetube-mpv-{}.sock", std::process::id());
     let _ = std::fs::remove_file(&socket_path);
 
     let child = match tokio::process::Command::new("mpv")
@@ -163,7 +163,7 @@ pub async fn play(
 
 /// Set pause state on the mpv IPC socket.
 pub async fn set_pause(paused: bool) -> Result<()> {
-    let socket_path = format!("/tmp/yewtube-mpv-{}.sock", std::process::id());
+    let socket_path = format!("/tmp/litetube-mpv-{}.sock", std::process::id());
 
     let stream = UnixStream::connect(&socket_path)
         .await

@@ -123,7 +123,7 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent, tx: &mpsc::Unbound
                         if let Some(ref mut pb) = app.playback {
                             pb.paused = new_paused;
                         }
-                        let tx = tx.clone();
+                        let _tx = tx.clone();
                         tokio::spawn(async move {
                             let _ = player::set_pause(new_paused).await;
                         });
