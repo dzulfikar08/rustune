@@ -14,7 +14,6 @@ pub struct SearchResult {
 }
 
 /// Search YouTube using yt-dlp. Returns up to 10 results per page.
-/// `page` is 0-indexed.
 pub async fn search(query: &str, page: usize) -> Result<Vec<SearchResult>> {
     let start = page * 10 + 1;
     let end = (page + 1) * 10;
@@ -75,14 +74,14 @@ pub async fn get_stream_url(video_id: &str) -> Result<String> {
         anyhow::bail!("Stream extraction failed: {}", stderr.trim());
     }
 
-    let stream_url = String::from_utf8_lossy(&output.stdout);
-    let stream_url = stream_url.trim().to_string();
+    let url = String::from_utf8_lossy(&output.stdout);
+    let url = url.trim().to_string();
 
-    if stream_url.is_empty() {
+    if url.is_empty() {
         anyhow::bail!("No stream URL returned");
     }
 
-    Ok(stream_url)
+    Ok(url)
 }
 
 /// Check if yt-dlp is available on the system.
