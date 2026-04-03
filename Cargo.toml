@@ -1,6 +1,6 @@
 [package]
 name = "rustune"
-version = "0.2.0"
+version = "0.2.2"
 edition = "2021"
 description = "A terminal music player with online audio search, local playback, and Winamp skin support"
 repository = "https://github.com/dzulfikar08/rustune"
