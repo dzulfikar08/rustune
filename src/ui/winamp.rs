@@ -221,7 +221,7 @@ fn render_bitmap_mode(frame: &mut Frame, app: &mut App) {
     };
 }
 
-// Row 0 — Title bar overlay (bitmap background + skin name text)
+// Row 0 — Title bar overlay: only paint skin name centered, leave bitmap chrome visible
 fn render_bitmap_titlebar(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let skin_name = app
         .winamp_skin
@@ -229,35 +229,19 @@ fn render_bitmap_titlebar(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
         .map(|s| s.name.as_str())
         .unwrap_or("WINAMP");
 
-    let w = area.width as usize;
+    // Center the skin name text on the row
     let title = format!(" {skin_name} ");
-    let controls = " \u{2500}\u{25A1}\u{2715} ";
-    let pad = w.saturating_sub(title.len() + controls.len());
+    let title_len = title.len() as u16;
+    let x = area.x + area.width.saturating_sub(title_len) / 2;
 
-    let line = Line::from(vec![
-        Span::styled(
-            title,
-            Style::default()
-                .fg(Color::White)
-                .bg(sc.titlebar_bg)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            "\u{2500}".repeat(pad),
-            Style::default().fg(sc.titlebar_bg).bg(sc.chrome_dark),
-        ),
-        Span::styled(
-            controls.to_string(),
-            Style::default().fg(sc.chrome_light).bg(sc.chrome_dark),
-        ),
-    ]);
-    frame.render_widget(
-        Paragraph::new(line).style(Style::default().bg(sc.chrome_dark)),
-        area,
-    );
+    let buf = frame.buffer_mut();
+    buf.set_string(x, area.y, title, Style::default()
+        .fg(Color::White)
+        .bg(sc.titlebar_bg)
+        .add_modifier(Modifier::BOLD));
 }
 
-// Row 1 — LED time + visualization overlay (bitmap background + time/vis text)
+// Row 1 — LED time + vis overlay: paint time and vis bars, leave bitmap visible around them
 fn render_bitmap_time_vis(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let elapsed = match &app.playback {
         Some(pb) => pb.elapsed_secs,
@@ -267,38 +251,37 @@ fn render_bitmap_time_vis(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let is_playing = app.playback.is_some();
     let is_paused = app.playback.as_ref().is_some_and(|p| p.paused);
 
-    let state_icon = if !is_playing {
-        Span::styled(" \u{25A0} ", Style::default().fg(sc.indicator_off).bg(sc.led_bg))
+    let buf = frame.buffer_mut();
+    let mut x = area.x;
+
+    // State icon
+    let state = if !is_playing {
+        (" ■ ", sc.indicator_off)
     } else if is_paused {
-        Span::styled(" \u{2016} ", Style::default().fg(sc.pause_indicator).bg(sc.led_bg))
+        (" ‖ ", sc.pause_indicator)
     } else {
-        Span::styled(" \u{25B6} ", Style::default().fg(sc.play_indicator).bg(sc.led_bg))
+        (" ▶ ", sc.play_indicator)
     };
+    buf.set_string(x, area.y, state.0, Style::default().fg(state.1).bg(sc.body_bg));
+    x += 3;
 
+    // LED time
     let time_str = format!(" {}:{:02} ", elapsed / 60, elapsed % 60);
-    let led_time = Span::styled(
-        time_str,
-        Style::default()
-            .fg(sc.led_on)
-            .bg(sc.led_bg)
-            .add_modifier(Modifier::BOLD),
-    );
+    buf.set_string(x, area.y, &time_str, Style::default()
+        .fg(sc.led_on)
+        .bg(sc.body_bg)
+        .add_modifier(Modifier::BOLD));
+    x += time_str.len() as u16;
 
-    // Visualization bars
-    let vis_width = (area.width as usize).saturating_sub(14);
-    let bar_count = vis_width / 2;
-    let seed = elapsed;
-
-    let mut vis_spans: Vec<Span> = Vec::with_capacity(bar_count + 1);
-    vis_spans.push(Span::styled(" ", Style::default().bg(sc.body_bg)));
+    // Visualization bars (only in the right portion of the row)
+    let vis_start = area.width.saturating_sub(area.width * 2 / 3);
+    x = area.x + vis_start;
 
     if is_playing && !is_paused {
-        let bar_chars = [
-            '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}',
-            '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}',
-        ];
+        let bar_chars = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+        let bar_count = (area.width - vis_start) / 2;
         for i in 0..bar_count {
-            let h = ((seed.wrapping_mul(7).wrapping_add(i as u64 * 13)) % 6) as usize + 1;
+            let h = ((elapsed.wrapping_mul(7).wrapping_add(i as u64 * 13)) % 6) as usize + 1;
             let color = if sc.vis_colors.len() > 2 {
                 let idx = (h * (sc.vis_colors.len() - 2) / 7).min(sc.vis_colors.len() - 1);
                 sc.vis_colors.get(idx + 2).copied().unwrap_or(sc.led_off)
@@ -306,30 +289,13 @@ fn render_bitmap_time_vis(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
                 sc.led_off
             };
             let ch = bar_chars[h.min(bar_chars.len() - 1)];
-            vis_spans.push(Span::styled(
-                format!("{ch} "),
-                Style::default().fg(color).bg(sc.led_bg),
-            ));
-        }
-    } else {
-        for _ in 0..bar_count {
-            vis_spans.push(Span::styled(
-                "\u{2581} ",
-                Style::default().fg(sc.led_off).bg(sc.led_bg),
-            ));
+            buf.set_string(x, area.y, &format!("{ch} "), Style::default().fg(color).bg(sc.body_bg));
+            x += 2;
         }
     }
-
-    let mut spans = vec![state_icon, led_time];
-    spans.extend(vis_spans);
-
-    frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(sc.body_bg)),
-        area,
-    );
 }
 
-// Row 2 — Marquee overlay (bitmap background + scrolling title text)
+// Row 2 — Marquee overlay: paint track title, leave bitmap borders visible
 fn render_bitmap_marquee(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let title = match &app.playback {
         Some(pb) => pb.title.clone(),
@@ -340,27 +306,21 @@ fn render_bitmap_marquee(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
         },
     };
 
-    let w = area.width as usize;
-    let display = if title.len() > w.saturating_sub(2) {
-        let mut t: String = title.chars().take(w.saturating_sub(3)).collect();
-        t.push('\u{2026}');
+    // Leave 1 cell padding on each side for bitmap chrome
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let display = if title.len() > inner_w {
+        let mut t: String = title.chars().take(inner_w.saturating_sub(1)).collect();
+        t.push('…');
         t
     } else {
         title
     };
 
-    let line = Line::from(vec![
-        Span::styled(" ", Style::default().bg(sc.text_bg)),
-        Span::styled(display, Style::default().fg(sc.text_fg).bg(sc.text_bg)),
-        Span::styled(
-            " ".repeat(w.saturating_sub(1)),
-            Style::default().bg(sc.text_bg),
-        ),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+    let buf = frame.buffer_mut();
+    buf.set_string(area.x + 1, area.y, &display, Style::default().fg(sc.text_fg).bg(sc.text_bg));
 }
 
-// Row 3 — Seek bar overlay (bitmap background + progress gauge)
+// Row 3 — Seek bar overlay: paint progress gauge, leave bitmap chrome visible
 fn render_bitmap_seekbar(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let (elapsed, duration) = match &app.playback {
         Some(pb) => (pb.elapsed_secs, pb.duration_secs),
@@ -375,26 +335,52 @@ fn render_bitmap_seekbar(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
 
     let elapsed_str = format_time(elapsed);
     let duration_str = format_time(duration);
-    let label = format!("{elapsed_str} / {duration_str}");
+    let label = format!("{elapsed_str}/{duration_str}");
 
-    let gauge = LineGauge::default()
-        .ratio(ratio)
-        .label(Span::styled(label, Style::default().fg(sc.led_on)))
-        .filled_style(Style::default().fg(sc.seek_filled).bg(sc.seek_track))
-        .unfilled_style(Style::default().fg(sc.seek_track).bg(sc.body_bg))
-        .line_set(ratatui::symbols::line::THICK);
+    // Leave 2 cells padding for bitmap chrome, paint gauge in the middle
+    let gauge_width = area.width.saturating_sub(4);
+    if gauge_width == 0 {
+        return;
+    }
 
-    frame.render_widget(gauge, area);
+    let filled = ((gauge_width as f64) * ratio) as u16;
+    let unfilled = gauge_width.saturating_sub(filled);
+
+    let buf = frame.buffer_mut();
+    let gauge_x = area.x + 2;
+
+    // Paint label centered
+    let label_x = gauge_x + gauge_width.saturating_sub(label.len() as u16) / 2;
+
+    // Paint filled portion
+    if filled > 0 {
+        buf.set_string(gauge_x, area.y, &"█".repeat(filled as usize), Style::default().fg(sc.seek_filled));
+    }
+    // Paint unfilled portion
+    if unfilled > 0 {
+        buf.set_string(gauge_x + filled, area.y, &"░".repeat(unfilled as usize), Style::default().fg(sc.seek_track));
+    }
+    // Paint label on top
+    buf.set_string(label_x, area.y, &label, Style::default().fg(sc.led_on).bg(sc.body_bg));
 }
 
-// Row 4 — Transport + Volume + Balance overlay (bitmap background + controls)
+// Row 4 — Transport overlay: paint button states, leave bitmap chrome visible
 fn render_bitmap_transport(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let is_paused = app.playback.as_ref().is_some_and(|p| p.paused);
     let is_playing = app.playback.is_some();
 
+    let buf = frame.buffer_mut();
+    let mut x = area.x + 1; // 1 cell padding for bitmap chrome
+
+    let btn = |label: &str, style: Style, buf: &mut ratatui::buffer::Buffer, x: &mut u16| {
+        buf.set_string(*x, area.y, label, style);
+        *x += label.len() as u16;
+        buf.set_string(*x, area.y, " ", Style::default().bg(sc.body_bg));
+        *x += 1;
+    };
+
     let btn_style = Style::default().fg(sc.btn_text).bg(sc.btn_normal);
     let btn_active = Style::default().fg(Color::Black).bg(sc.chrome_light);
-    let sep = Span::styled(" ", Style::default().bg(sc.body_bg));
 
     let play_style = if is_playing && !is_paused {
         Style::default().fg(Color::Black).bg(sc.play_indicator)
@@ -407,59 +393,23 @@ fn render_bitmap_transport(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
         btn_style
     };
 
-    let vol_filled = 7;
-    let vol_empty = 3;
-    let vol_bar = format!(
-        "{}{}",
-        "\u{2588}".repeat(vol_filled),
-        "\u{2591}".repeat(vol_empty),
-    );
-
-    let bal_filled = 5;
-    let bal_empty = 5;
-    let bal_bar = format!(
-        "{}{}",
-        "\u{2588}".repeat(bal_filled),
-        "\u{2591}".repeat(bal_empty),
-    );
-
-    let line = Line::from(vec![
-        Span::styled(" \u{23EE} ", btn_active),
-        sep.clone(),
-        Span::styled(" \u{23EA} ", btn_style),
-        sep.clone(),
-        Span::styled(" \u{25B6} ", play_style),
-        sep.clone(),
-        Span::styled(" \u{23F8} ", pause_style),
-        sep.clone(),
-        Span::styled(" \u{23F9} ", btn_style),
-        sep.clone(),
-        Span::styled(" \u{23E9} ", btn_style),
-        sep.clone(),
-        Span::styled(" \u{23ED} ", btn_active),
-        Span::styled("  ", Style::default().bg(sc.body_bg)),
-        Span::styled("VOL", Style::default().fg(sc.chrome_light).bg(sc.body_bg)),
-        Span::styled(vol_bar, Style::default().fg(sc.led_on).bg(sc.body_bg)),
-        Span::styled(" ", Style::default().bg(sc.body_bg)),
-        Span::styled("BAL", Style::default().fg(sc.chrome_light).bg(sc.body_bg)),
-        Span::styled(bal_bar, Style::default().fg(sc.led_on).bg(sc.body_bg)),
-    ]);
-    frame.render_widget(
-        Paragraph::new(line).style(Style::default().bg(sc.body_bg)),
-        area,
-    );
+    btn(" ⏮ ", btn_active, buf, &mut x);
+    btn(" ⏪ ", btn_style, buf, &mut x);
+    btn(" ▶ ", play_style, buf, &mut x);
+    btn(" ⏸ ", pause_style, buf, &mut x);
+    btn(" ⏹ ", btn_style, buf, &mut x);
+    btn(" ⏩ ", btn_style, buf, &mut x);
+    btn(" ⏭ ", btn_active, buf, &mut x);
 }
 
-// Row 5 — Status row overlay (bitmap background + indicators)
+// Row 5 — Status row overlay: paint indicators, leave bitmap chrome visible
 fn render_bitmap_status(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let is_playing = app.playback.is_some();
 
-    let shuf_style = Style::default().fg(sc.indicator_off).bg(sc.chrome_dark);
-    let rep_style = Style::default().fg(sc.indicator_off).bg(sc.chrome_dark);
-    let eq_style = Style::default().fg(sc.indicator_off).bg(sc.chrome_dark);
-    let pl_style = Style::default().fg(sc.indicator_on).bg(sc.chrome_dark);
+    let buf = frame.buffer_mut();
+    let mut x = area.x + 1;
 
-    let (mono_fg, stereo_fg) = if is_playing {
+    let (mono_fg, _stereo_fg) = if is_playing {
         (sc.indicator_off, sc.indicator_on)
     } else {
         (sc.indicator_off, sc.indicator_off)
@@ -470,31 +420,21 @@ fn render_bitmap_status(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
         crate::media::SourceKind::Extractor(_) => "ONLINE",
     };
 
-    let line = Line::from(vec![
-        Span::styled(" SHUF ", shuf_style),
-        Span::styled(" ", Style::default().bg(sc.body_bg)),
-        Span::styled(" REP ", rep_style),
-        Span::styled("  ", Style::default().bg(sc.body_bg)),
-        Span::styled(" EQ ", eq_style),
-        Span::styled(" ", Style::default().bg(sc.body_bg)),
-        Span::styled(" PL ", pl_style),
-        Span::styled("   ", Style::default().bg(sc.body_bg)),
-        Span::styled("mono", Style::default().fg(mono_fg).bg(sc.body_bg)),
-        Span::styled("/", Style::default().fg(sc.chrome_mid).bg(sc.body_bg)),
-        Span::styled("stereo", Style::default().fg(stereo_fg).bg(sc.body_bg)),
-        Span::styled("   ", Style::default().bg(sc.body_bg)),
-        Span::styled(
-            format!(" {source_label} "),
-            Style::default()
-                .fg(sc.titlebar_bg)
-                .bg(sc.chrome_dark)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]);
-    frame.render_widget(
-        Paragraph::new(line).style(Style::default().bg(sc.body_bg)),
-        area,
-    );
+    buf.set_string(x, area.y, " SHUF ", Style::default().fg(sc.indicator_off).bg(sc.chrome_dark));
+    x += 6;
+    buf.set_string(x, area.y, " ", Style::default().bg(sc.body_bg));
+    x += 1;
+    buf.set_string(x, area.y, " REP ", Style::default().fg(sc.indicator_off).bg(sc.chrome_dark));
+    x += 5;
+
+    // Source label at far right
+    let label = format!(" {source_label} ");
+    buf.set_string(area.x + area.width.saturating_sub(label.len() as u16), area.y, &label,
+        Style::default().fg(sc.titlebar_bg).bg(sc.chrome_dark).add_modifier(Modifier::BOLD));
+
+    // Mono/stereo indicator
+    buf.set_string(x + 3, area.y, &format!("mono/stereo"),
+        Style::default().fg(mono_fg).bg(sc.body_bg));
 }
 
 // ─── Text mode (original renderer, fallback when bitmaps unavailable) ───
