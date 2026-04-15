@@ -510,7 +510,11 @@ fn parse_bmp_8bit(data: Option<&Vec<u8>>) -> Option<BmpImage> {
     let compression = u32::from_le_bytes([data[30], data[31], data[32], data[33]]);
     let colors_used = u32::from_le_bytes([data[46], data[47], data[48], data[49]]);
 
-    if planes != 1 || bpp != 8 || compression != 0 {
+    if planes != 1 || bpp != 8 {
+        return None;
+    }
+    // Support uncompressed (0) and RLE8 (1)
+    if compression > 1 {
         return None;
     }
     if width <= 0 || height == 0 {
@@ -543,19 +547,91 @@ fn parse_bmp_8bit(data: Option<&Vec<u8>>) -> Option<BmpImage> {
         palette.push(Color::Rgb(r, g, b));
     }
 
-    let row_bytes = ((w as usize + 3) / 4) * 4; // rows padded to 4 bytes
-    let needed = row_bytes.saturating_mul(h as usize);
-    if data.len() < pixel_offset + needed {
-        return None;
-    }
-    let pix = &data[pixel_offset..pixel_offset + needed];
-
     let mut pixels = vec![0u8; (w as usize).saturating_mul(h as usize)];
-    for y in 0..h as usize {
-        let src_y = if top_down { y } else { (h as usize - 1).saturating_sub(y) };
-        let src_row = &pix[src_y * row_bytes..src_y * row_bytes + w as usize];
-        let dst_row = &mut pixels[y * w as usize..y * w as usize + w as usize];
-        dst_row.copy_from_slice(src_row);
+
+    if compression == 0 {
+        // Uncompressed: rows are padded to 4 bytes
+        let row_bytes = ((w as usize + 3) / 4) * 4;
+        let needed = row_bytes.saturating_mul(h as usize);
+        if data.len() < pixel_offset + needed {
+            return None;
+        }
+        let pix = &data[pixel_offset..pixel_offset + needed];
+        for y in 0..h as usize {
+            let src_y = if top_down { y } else { (h as usize - 1).saturating_sub(y) };
+            let src_row = &pix[src_y * row_bytes..src_y * row_bytes + w as usize];
+            let dst_row = &mut pixels[y * w as usize..y * w as usize + w as usize];
+            dst_row.copy_from_slice(src_row);
+        }
+    } else {
+        // RLE8 decompression (compression == 1)
+        // RLE8 is always bottom-up
+        if data.len() <= pixel_offset {
+            return None;
+        }
+        let rle_data = &data[pixel_offset..];
+        let mut pos = 0usize;
+        let mut x = 0usize;
+        let mut y = 0usize;
+
+        loop {
+            if pos + 1 >= rle_data.len() {
+                break;
+            }
+            let count = rle_data[pos] as usize;
+            let val = rle_data[pos + 1];
+            pos += 2;
+
+            if count > 0 {
+                // Encoded run: repeat `val` count times
+                for _ in 0..count {
+                    if x < w as usize && y < h as usize {
+                        pixels[y * w as usize + x] = val;
+                    }
+                    x += 1;
+                }
+            } else {
+                // Escape sequence
+                match val {
+                    0 => {
+                        // End of line
+                        x = 0;
+                        y += 1;
+                    }
+                    1 => {
+                        // End of bitmap
+                        break;
+                    }
+                    2 => {
+                        // Delta: move position
+                        if pos + 1 >= rle_data.len() {
+                            break;
+                        }
+                        x += rle_data[pos] as usize;
+                        y += rle_data[pos + 1] as usize;
+                        pos += 2;
+                    }
+                    _ => {
+                        // Absolute mode: `val` literal pixels follow
+                        let n = val as usize;
+                        if pos + n > rle_data.len() {
+                            break;
+                        }
+                        for i in 0..n {
+                            if x < w as usize && y < h as usize {
+                                pixels[y * w as usize + x] = rle_data[pos + i];
+                            }
+                            x += 1;
+                        }
+                        pos += n;
+                        // Absolute runs are padded to word boundary
+                        if n % 2 != 0 {
+                            pos += 1;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     Some(BmpImage {
