@@ -45,61 +45,48 @@ pub struct SkinZone {
 /// Computed layout for a fully-loaded skin.
 pub struct SkinLayout {
     pub zones: HashMap<ZoneKind, SkinZone>,
-    /// Additional BMP images (not from MAIN.BMP).
-    pub numbers: BmpImage,
-    pub cbuttons: BmpImage,
-    pub posbar: BmpImage,
-    pub text_bmp: BmpImage,
-    pub playpaus: BmpImage,
-    pub titlebar_bmp: BmpImage,
+    /// Additional BMP images (all optional).
+    pub numbers: Option<BmpImage>,
+    pub cbuttons: Option<BmpImage>,
+    pub posbar: Option<BmpImage>,
+    pub text_bmp: Option<BmpImage>,
+    pub playpaus: Option<BmpImage>,
+    pub titlebar_bmp: Option<BmpImage>,
     pub monoster: Option<BmpImage>,
     pub shufrep: Option<BmpImage>,
     pub volume_bmp: Option<BmpImage>,
 }
 
 impl SkinLayout {
-    /// Build a layout from a loaded skin. Returns `None` if any required BMP
-    /// is missing or has wrong dimensions (all-or-nothing check).
+    /// Build a layout from a loaded skin. Returns `None` if MAIN.BMP is missing.
+    /// Only MAIN.BMP is required — all other BMPs are optional enhancements.
     pub fn from_skin(skin: &WinampSkin) -> Option<Self> {
-        // Required BMPs from MAIN.BMP
+        // MAIN.BMP is the only hard requirement
         let main = skin.main_bitmap.as_ref()?;
-        validate_dims(main, 275, 116)?;
+        validate_dims(main, 100, 50)?;
 
-        // Required standalone BMPs
-        let numbers = skin.numbers_bitmap.as_ref()?;
-        validate_dims(numbers, 9, 13)?;
-
-        let cbuttons = skin.cbuttons_bitmap.as_ref()?;
-        validate_dims(cbuttons, 22, 18)?;
-
-        let posbar = skin.posbar_bitmap.as_ref()?;
-        validate_dims(posbar, 10, 10)?;
-
-        let text_bmp = skin.text_bitmap.as_ref()?;
-        validate_dims(text_bmp, 5, 5)?;
-
-        let playpaus = skin.playpaus_bitmap.as_ref()?;
-        validate_dims(playpaus, 2, 9)?;
-
-        let titlebar_bmp = skin.titlebar_bitmap.as_ref()?;
-        validate_dims(titlebar_bmp, 2, 2)?;
-
-        // Optional BMPs — no dimension check needed, None is fine
-        let monoster = skin.monoster_bitmap.clone();
-        let shufrep = skin.shufrep_bitmap.clone();
-        let volume_bmp = skin.volume_bitmap.clone();
+        // Optional BMPs — available when present, None otherwise
+        let numbers = skin.numbers_bitmap.as_ref().cloned();
+        let cbuttons = skin.cbuttons_bitmap.as_ref().cloned();
+        let posbar = skin.posbar_bitmap.as_ref().cloned();
+        let text_bmp = skin.text_bitmap.as_ref().cloned();
+        let playpaus = skin.playpaus_bitmap.as_ref().cloned();
+        let titlebar_bmp = skin.titlebar_bitmap.as_ref().cloned();
+        let monoster = skin.monoster_bitmap.as_ref().cloned();
+        let shufrep = skin.shufrep_bitmap.as_ref().cloned();
+        let volume_bmp = skin.volume_bitmap.as_ref().cloned();
 
         // Build zone map with Winamp 2.x MAIN.BMP pixel coordinates
         let zones = build_zones();
 
         Some(Self {
             zones,
-            numbers: numbers.clone(),
-            cbuttons: cbuttons.clone(),
-            posbar: posbar.clone(),
-            text_bmp: text_bmp.clone(),
-            playpaus: playpaus.clone(),
-            titlebar_bmp: titlebar_bmp.clone(),
+            numbers,
+            cbuttons,
+            posbar,
+            text_bmp,
+            playpaus,
+            titlebar_bmp,
             monoster,
             shufrep,
             volume_bmp,
