@@ -222,14 +222,14 @@ fn render_bitmap_mode(frame: &mut Frame, app: &mut App) {
 }
 
 // Row 0 — Title bar overlay: only paint skin name centered, leave bitmap chrome visible
-fn render_bitmap_titlebar(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
+fn render_bitmap_titlebar(frame: &mut Frame, area: Rect, app: &App, _sc: &SC) {
     let skin_name = app
         .winamp_skin
         .as_ref()
         .map(|s| s.name.as_str())
         .unwrap_or("WINAMP");
 
-    // Center the skin name text on the row
+    // Center the skin name text on the row — no bg to let bitmap show through
     let title = format!(" {skin_name} ");
     let title_len = title.len() as u16;
     let x = area.x + area.width.saturating_sub(title_len) / 2;
@@ -237,11 +237,10 @@ fn render_bitmap_titlebar(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let buf = frame.buffer_mut();
     buf.set_string(x, area.y, title, Style::default()
         .fg(Color::White)
-        .bg(sc.titlebar_bg)
         .add_modifier(Modifier::BOLD));
 }
 
-// Row 1 — LED time + vis overlay: paint time and vis bars, leave bitmap visible around them
+// Row 1 — LED time + vis overlay: paint time and vis bars, leave bitmap visible
 fn render_bitmap_time_vis(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let elapsed = match &app.playback {
         Some(pb) => pb.elapsed_secs,
@@ -254,22 +253,21 @@ fn render_bitmap_time_vis(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let buf = frame.buffer_mut();
     let mut x = area.x;
 
-    // State icon
-    let state = if !is_playing {
+    // State icon — no bg to keep bitmap visible
+    let (state_str, state_fg) = if !is_playing {
         (" ■ ", sc.indicator_off)
     } else if is_paused {
         (" ‖ ", sc.pause_indicator)
     } else {
         (" ▶ ", sc.play_indicator)
     };
-    buf.set_string(x, area.y, state.0, Style::default().fg(state.1).bg(sc.body_bg));
+    buf.set_string(x, area.y, state_str, Style::default().fg(state_fg));
     x += 3;
 
     // LED time
     let time_str = format!(" {}:{:02} ", elapsed / 60, elapsed % 60);
     buf.set_string(x, area.y, &time_str, Style::default()
         .fg(sc.led_on)
-        .bg(sc.body_bg)
         .add_modifier(Modifier::BOLD));
     x += time_str.len() as u16;
 
@@ -289,13 +287,13 @@ fn render_bitmap_time_vis(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
                 sc.led_off
             };
             let ch = bar_chars[h.min(bar_chars.len() - 1)];
-            buf.set_string(x, area.y, &format!("{ch} "), Style::default().fg(color).bg(sc.body_bg));
+            buf.set_string(x, area.y, &format!("{ch} "), Style::default().fg(color));
             x += 2;
         }
     }
 }
 
-// Row 2 — Marquee overlay: paint track title, leave bitmap borders visible
+// Row 2 — Marquee overlay: paint track title, leave bitmap visible
 fn render_bitmap_marquee(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let title = match &app.playback {
         Some(pb) => pb.title.clone(),
@@ -317,10 +315,10 @@ fn render_bitmap_marquee(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     };
 
     let buf = frame.buffer_mut();
-    buf.set_string(area.x + 1, area.y, &display, Style::default().fg(sc.text_fg).bg(sc.text_bg));
+    buf.set_string(area.x + 1, area.y, &display, Style::default().fg(sc.text_fg));
 }
 
-// Row 3 — Seek bar overlay: paint progress gauge, leave bitmap chrome visible
+// Row 3 — Seek bar overlay: paint progress gauge, leave bitmap visible
 fn render_bitmap_seekbar(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let (elapsed, duration) = match &app.playback {
         Some(pb) => (pb.elapsed_secs, pb.duration_secs),
@@ -337,7 +335,6 @@ fn render_bitmap_seekbar(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let duration_str = format_time(duration);
     let label = format!("{elapsed_str}/{duration_str}");
 
-    // Leave 2 cells padding for bitmap chrome, paint gauge in the middle
     let gauge_width = area.width.saturating_sub(4);
     if gauge_width == 0 {
         return;
@@ -349,60 +346,47 @@ fn render_bitmap_seekbar(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let buf = frame.buffer_mut();
     let gauge_x = area.x + 2;
 
-    // Paint label centered
     let label_x = gauge_x + gauge_width.saturating_sub(label.len() as u16) / 2;
 
-    // Paint filled portion
+    // Paint filled/unfilled — no bg to keep bitmap visible
     if filled > 0 {
         buf.set_string(gauge_x, area.y, &"█".repeat(filled as usize), Style::default().fg(sc.seek_filled));
     }
-    // Paint unfilled portion
     if unfilled > 0 {
         buf.set_string(gauge_x + filled, area.y, &"░".repeat(unfilled as usize), Style::default().fg(sc.seek_track));
     }
-    // Paint label on top
-    buf.set_string(label_x, area.y, &label, Style::default().fg(sc.led_on).bg(sc.body_bg));
+    buf.set_string(label_x, area.y, &label, Style::default().fg(sc.led_on));
 }
 
-// Row 4 — Transport overlay: paint button states, leave bitmap chrome visible
+// Row 4 — Transport overlay: paint button states, leave bitmap visible
 fn render_bitmap_transport(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let is_paused = app.playback.as_ref().is_some_and(|p| p.paused);
     let is_playing = app.playback.is_some();
 
     let buf = frame.buffer_mut();
-    let mut x = area.x + 1; // 1 cell padding for bitmap chrome
+    let mut x = area.x + 1;
 
-    let btn = |label: &str, style: Style, buf: &mut ratatui::buffer::Buffer, x: &mut u16| {
-        buf.set_string(*x, area.y, label, style);
+    let btn = |label: &str, fg: Color, buf: &mut ratatui::buffer::Buffer, x: &mut u16| {
+        buf.set_string(*x, area.y, label, Style::default().fg(fg));
         *x += label.len() as u16;
-        buf.set_string(*x, area.y, " ", Style::default().bg(sc.body_bg));
-        *x += 1;
     };
 
-    let btn_style = Style::default().fg(sc.btn_text).bg(sc.btn_normal);
-    let btn_active = Style::default().fg(Color::Black).bg(sc.chrome_light);
+    let btn_fg = sc.btn_text;
+    let active_fg = Color::Black;
 
-    let play_style = if is_playing && !is_paused {
-        Style::default().fg(Color::Black).bg(sc.play_indicator)
-    } else {
-        btn_style
-    };
-    let pause_style = if is_paused {
-        Style::default().fg(Color::Black).bg(sc.pause_indicator)
-    } else {
-        btn_style
-    };
+    let play_fg = if is_playing && !is_paused { sc.play_indicator } else { btn_fg };
+    let pause_fg = if is_paused { sc.pause_indicator } else { btn_fg };
 
-    btn(" ⏮ ", btn_active, buf, &mut x);
-    btn(" ⏪ ", btn_style, buf, &mut x);
-    btn(" ▶ ", play_style, buf, &mut x);
-    btn(" ⏸ ", pause_style, buf, &mut x);
-    btn(" ⏹ ", btn_style, buf, &mut x);
-    btn(" ⏩ ", btn_style, buf, &mut x);
-    btn(" ⏭ ", btn_active, buf, &mut x);
+    btn(" ⏮ ", active_fg, buf, &mut x);
+    btn(" ⏪ ", btn_fg, buf, &mut x);
+    btn(" ▶ ", play_fg, buf, &mut x);
+    btn(" ⏸ ", pause_fg, buf, &mut x);
+    btn(" ⏹ ", btn_fg, buf, &mut x);
+    btn(" ⏩ ", btn_fg, buf, &mut x);
+    btn(" ⏭ ", active_fg, buf, &mut x);
 }
 
-// Row 5 — Status row overlay: paint indicators, leave bitmap chrome visible
+// Row 5 — Status row overlay: paint indicators, leave bitmap visible
 fn render_bitmap_status(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let is_playing = app.playback.is_some();
 
@@ -420,21 +404,18 @@ fn render_bitmap_status(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
         crate::media::SourceKind::Extractor(_) => "ONLINE",
     };
 
-    buf.set_string(x, area.y, " SHUF ", Style::default().fg(sc.indicator_off).bg(sc.chrome_dark));
+    // No bg — keep bitmap visible
+    buf.set_string(x, area.y, " SHUF ", Style::default().fg(sc.indicator_off));
     x += 6;
-    buf.set_string(x, area.y, " ", Style::default().bg(sc.body_bg));
-    x += 1;
-    buf.set_string(x, area.y, " REP ", Style::default().fg(sc.indicator_off).bg(sc.chrome_dark));
+    buf.set_string(x, area.y, " REP ", Style::default().fg(sc.indicator_off));
     x += 5;
 
-    // Source label at far right
     let label = format!(" {source_label} ");
     buf.set_string(area.x + area.width.saturating_sub(label.len() as u16), area.y, &label,
-        Style::default().fg(sc.titlebar_bg).bg(sc.chrome_dark).add_modifier(Modifier::BOLD));
+        Style::default().fg(sc.titlebar_bg).add_modifier(Modifier::BOLD));
 
-    // Mono/stereo indicator
-    buf.set_string(x + 3, area.y, &format!("mono/stereo"),
-        Style::default().fg(mono_fg).bg(sc.body_bg));
+    buf.set_string(x + 3, area.y, "mono/stereo",
+        Style::default().fg(mono_fg));
 }
 
 // ─── Text mode (original renderer, fallback when bitmaps unavailable) ───

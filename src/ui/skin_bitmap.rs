@@ -94,6 +94,7 @@ pub fn render_bitmap_region(
         height: src_h,
         palette: bmp.palette.clone(),
         pixels,
+        raw_rgb: None, // crop not supported for raw_rgb mode yet
     };
 
     render_scaled_bitmap(frame, area, &cropped);

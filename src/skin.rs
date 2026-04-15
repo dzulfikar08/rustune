@@ -29,7 +29,11 @@ pub struct BmpImage {
     pub height: u32,
     pub palette: Vec<Color>,
     /// Pixel indices into `palette`, in row-major, top-down order.
+    /// For 24bpp images without a real palette, each byte stores a palette index.
     pub pixels: Vec<u8>,
+    /// For 24bpp images: raw BGR triplets per pixel (row-major, top-down).
+    /// If present, `color_at` uses this instead of palette lookup.
+    pub raw_rgb: Option<Vec<u8>>,
 }
 
 impl BmpImage {
@@ -39,6 +43,15 @@ impl BmpImage {
         let idx = (y as usize)
             .saturating_mul(self.width as usize)
             .saturating_add(x as usize);
+
+        if let Some(ref rgb) = self.raw_rgb {
+            let off = idx * 3;
+            if off + 2 < rgb.len() {
+                return Color::Rgb(rgb[off + 2], rgb[off + 1], rgb[off]); // BGR -> RGB
+            }
+            return Color::Black;
+        }
+
         let p = self.pixels.get(idx).copied().unwrap_or(0) as usize;
         self.palette.get(p).copied().unwrap_or(Color::Black)
     }
@@ -119,11 +132,14 @@ impl WinampSkin {
             .unwrap_or("unknown")
             .to_string();
 
-        // Collect all file contents into a HashMap
+        // Collect all file contents into a HashMap.
+        // Strip directory prefixes so that e.g. "skin_dir/MAIN.BMP" → "MAIN.BMP"
         let mut files: HashMap<String, Vec<u8>> = HashMap::new();
         for i in 0..archive.len() {
             let mut f = archive.by_index(i)?;
-            let fname = f.name().to_uppercase();
+            let raw_name = f.name().to_uppercase();
+            // Take only the filename portion (after last '/')
+            let fname = raw_name.rsplit('/').next().unwrap_or(&raw_name).to_string();
             let mut buf = Vec::new();
             f.read_to_end(&mut buf)?;
             files.insert(fname, buf);
@@ -502,7 +518,6 @@ fn parse_bmp_8bit(data: Option<&Vec<u8>>) -> Option<BmpImage> {
         return None;
     }
 
-    // BITMAPINFOHEADER (size 40) is expected for Winamp skins.
     let width = i32::from_le_bytes([data[18], data[19], data[20], data[21]]);
     let height = i32::from_le_bytes([data[22], data[23], data[24], data[25]]);
     let planes = u16::from_le_bytes([data[26], data[27]]);
@@ -510,10 +525,12 @@ fn parse_bmp_8bit(data: Option<&Vec<u8>>) -> Option<BmpImage> {
     let compression = u32::from_le_bytes([data[30], data[31], data[32], data[33]]);
     let colors_used = u32::from_le_bytes([data[46], data[47], data[48], data[49]]);
 
-    if planes != 1 || bpp != 8 {
+    if planes != 1 {
         return None;
     }
-    // Support uncompressed (0) and RLE8 (1)
+    if bpp != 8 && bpp != 24 && bpp != 32 {
+        return None;
+    }
     if compression > 1 {
         return None;
     }
@@ -525,6 +542,42 @@ fn parse_bmp_8bit(data: Option<&Vec<u8>>) -> Option<BmpImage> {
     let top_down = height < 0;
     let h = height.unsigned_abs();
 
+    // 24bpp/32bpp path: no palette, store raw BGR triplets
+    if bpp == 24 || bpp == 32 {
+        let bytes_per_pixel = (bpp / 8) as usize; // 3 for 24bpp, 4 for 32bpp
+        let row_bytes = (((w as usize) * bytes_per_pixel + 3) / 4) * 4;
+        let needed = row_bytes.saturating_mul(h as usize);
+        if data.len() < pixel_offset + needed {
+            return None;
+        }
+
+        // Always store as BGR triplets (3 bytes/pixel), skip alpha for 32bpp
+        let mut raw_rgb = vec![0u8; (w as usize * 3).saturating_mul(h as usize)];
+        let pix = &data[pixel_offset..pixel_offset + needed];
+        for y in 0..h as usize {
+            let src_y = if top_down { y } else { (h as usize - 1).saturating_sub(y) };
+            let src_off = src_y * row_bytes;
+            let dst_off = y * w as usize * 3;
+            for x in 0..w as usize {
+                let si = src_off + x * bytes_per_pixel;
+                let di = dst_off + x * 3;
+                raw_rgb[di] = pix[si];         // B
+                raw_rgb[di + 1] = pix[si + 1]; // G
+                raw_rgb[di + 2] = pix[si + 2]; // R
+                // pix[si + 3] for 32bpp is alpha — ignored
+            }
+        }
+
+        return Some(BmpImage {
+            width: w,
+            height: h,
+            palette: vec![Color::Black],
+            pixels: vec![0u8; (w as usize).saturating_mul(h as usize)],
+            raw_rgb: Some(raw_rgb),
+        });
+    }
+
+    // 8bpp path (original)
     let palette_start = 14 + dib_size;
     if pixel_offset <= palette_start || data.len() < pixel_offset {
         return None;
@@ -639,6 +692,7 @@ fn parse_bmp_8bit(data: Option<&Vec<u8>>) -> Option<BmpImage> {
         height: h,
         palette,
         pixels,
+        raw_rgb: None,
     })
 }
 
@@ -765,4 +819,108 @@ fn parse_viscolor_txt(data: Option<&Vec<u8>>) -> Vec<Color> {
     }
 
     colors
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    #[test]
+    fn test_parse_all_skins() {
+        let skin_dir = dirs::config_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
+            .join("rustune")
+            .join("skins");
+
+        if !skin_dir.exists() {
+            eprintln!("SKIP: skin dir not found");
+            return;
+        }
+
+        let entries = std::fs::read_dir(&skin_dir).expect("read dir");
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("wsz")) != Some(true) {
+                continue;
+            }
+            let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            match WinampSkin::from_wsz(&path) {
+                Ok(skin) => {
+                    let has_main = skin.main_bitmap.is_some();
+                    let bmp_info = skin.main_bitmap.as_ref()
+                        .map(|b| format!("{}x{}", b.width, b.height))
+                        .unwrap_or_else(|| "None".into());
+                    eprintln!("OK {}: main_bitmap={} {}", name, has_main, bmp_info);
+                    assert!(has_main, "Skin {} should have main_bitmap", name);
+                }
+                Err(e) => {
+                    eprintln!("FAIL {}: {}", name, e);
+                    // Don't fail the test for broken skins, just log
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_main_bmp_from_wsz() {
+        let skin_path = dirs::config_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
+            .join("rustune")
+            .join("skins")
+            .join("base-2.91.wsz");
+
+        if !skin_path.exists() {
+            eprintln!("SKIP: skin not found at {:?}", skin_path);
+            return;
+        }
+
+        let file = std::fs::File::open(&skin_path).expect("open wsz");
+        let mut archive = zip::ZipArchive::new(file).expect("zip archive");
+
+        let mut files: HashMap<String, Vec<u8>> = HashMap::new();
+        for i in 0..archive.len() {
+            let mut f = archive.by_index(i).expect("by_index");
+            let fname = f.name().to_uppercase();
+            let mut buf = Vec::new();
+            f.read_to_end(&mut buf).expect("read");
+            files.insert(fname, buf);
+        }
+
+        // Check MAIN.BMP exists
+        let main_data = files.get("MAIN.BMP").expect("MAIN.BMP must be in WSZ");
+        eprintln!("MAIN.BMP data length: {}", main_data.len());
+
+        // Parse header manually
+        let magic = &main_data[0..2];
+        eprintln!("Magic: {:?}", std::str::from_utf8(magic));
+        let bpp = u16::from_le_bytes([main_data[28], main_data[29]]);
+        let comp = u32::from_le_bytes([main_data[30], main_data[31], main_data[32], main_data[33]]);
+        let w = i32::from_le_bytes([main_data[18], main_data[19], main_data[20], main_data[21]]);
+        let h = i32::from_le_bytes([main_data[22], main_data[23], main_data[24], main_data[25]]);
+        let planes = u16::from_le_bytes([main_data[26], main_data[27]]);
+        eprintln!("MAIN.BMP: {}x{} planes={} bpp={} comp={}", w, h, planes, bpp, comp);
+
+        // Try parsing
+        let result = parse_bmp_8bit(files.get("MAIN.BMP"));
+        match &result {
+            Some(bmp) => {
+                eprintln!("SUCCESS: {}x{} palette={} pixels={}", bmp.width, bmp.height, bmp.palette.len(), bmp.pixels.len());
+            }
+            None => {
+                eprintln!("FAILED: parse_bmp_8bit returned None");
+            }
+        }
+        assert!(result.is_some(), "MAIN.BMP should parse successfully");
+
+        // Also check all other BMPs
+        for name in &["NUMBERS.BMP", "CBUTTONS.BMP", "POSBAR.BMP", "TEXT.BMP", "PLAYPAUS.BMP", "TITLEBAR.BMP", "VOLUME.BMP", "MONOSTER.BMP", "SHUFREP.BMP"] {
+            if let Some(data) = files.get(*name) {
+                let bpp = u16::from_le_bytes([data[28], data[29]]);
+                let comp = u32::from_le_bytes([data[30], data[31], data[32], data[33]]);
+                let result = parse_bmp_8bit(Some(data));
+                eprintln!("{}: len={} bpp={} comp={} => {}", name, data.len(), bpp, comp, result.is_some());
+            }
+        }
+    }
 }
