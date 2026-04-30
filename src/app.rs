@@ -23,6 +23,7 @@ pub enum Status {
     Searching(String),
     Loading(String),
     Scanning(String),
+    Downloading(String),
     Error(String),
 }
 
@@ -148,6 +149,8 @@ pub struct App {
     pub skin_browser_source: SkinBrowserSource,
     pub skin_search_query: String,
     pub skin_search_active: bool,
+    pub downloading_title: Option<String>,
+    pub local_library: Vec<MediaItem>,
 }
 
 // Actions returned by key handlers
@@ -159,6 +162,7 @@ pub enum BrowseAction {
     TogglePause,
     OpenSettings,
     SwitchSource,
+    Download(String, String), // id, title
 }
 
 pub enum InputAction {
@@ -230,6 +234,8 @@ impl App {
             skin_browser_source: SkinBrowserSource::Local,
             skin_search_query: String::new(),
             skin_search_active: false,
+            downloading_title: None,
+            local_library: Vec::new(),
         }
     }
 
@@ -336,6 +342,16 @@ impl App {
             KeyCode::Char(' ') => BrowseAction::TogglePause,
             KeyCode::Char('s') | KeyCode::Char('S') => BrowseAction::OpenSettings,
             KeyCode::Tab => BrowseAction::SwitchSource,
+            KeyCode::Char('d') => {
+                if matches!(self.active_source, SourceKind::Extractor(_))
+                    && self.downloading_title.is_none()
+                {
+                    if let Some(result) = self.selected_result() {
+                        return BrowseAction::Download(result.id.clone(), result.title.clone());
+                    }
+                }
+                BrowseAction::None
+            }
             KeyCode::Enter => {
                 if let Some(result) = self.selected_result() {
                     BrowseAction::Play(result.id.clone(), result.title.clone())

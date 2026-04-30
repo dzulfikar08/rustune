@@ -15,6 +15,7 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &mut App) {
         let msg = match &app.status {
             Status::Searching(text) => text.clone(),
             Status::Scanning(text) => text.clone(),
+            Status::Downloading(text) => text.clone(),
             Status::Error(text) => text.clone(),
             _ => match (app.active_source.clone(), app.input_history.is_empty()) {
                 (SourceKind::Local, true) => "No music files found. Press Tab to switch to online search.".to_string(),
@@ -26,6 +27,7 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &mut App) {
         let style = match &app.status {
             Status::Searching(_) => theme.searching_text,
             Status::Scanning(_) => theme.scanning_text,
+            Status::Downloading(_) => theme.loading_text,
             Status::Error(_) => theme.error_text,
             _ => theme.empty_text,
         };

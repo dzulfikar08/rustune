@@ -27,6 +27,7 @@ use ratatui::{
 };
 
 use crate::app::{App, LayoutRects, Mode, Status};
+use crate::media::SourceKind;
 use crate::skin::WinampSkin;
 use crate::ui::skin_bitmap;
 
@@ -298,7 +299,7 @@ fn render_bitmap_marquee(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let title = match &app.playback {
         Some(pb) => pb.title.clone(),
         None => match &app.status {
-            Status::Loading(t) | Status::Searching(t) | Status::Scanning(t) => t.clone(),
+            Status::Loading(t) | Status::Searching(t) | Status::Scanning(t) | Status::Downloading(t) => t.clone(),
             Status::Error(t) => t.clone(),
             _ => "  ***  rustune  ***  ".into(),
         },
@@ -620,7 +621,7 @@ fn render_marquee(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let title = match &app.playback {
         Some(pb) => pb.title.clone(),
         None => match &app.status {
-            Status::Loading(t) | Status::Searching(t) | Status::Scanning(t) => t.clone(),
+            Status::Loading(t) | Status::Searching(t) | Status::Scanning(t) | Status::Downloading(t) => t.clone(),
             Status::Error(t) => t.clone(),
             _ => "  ***  rustune  ***  ".into(),
         },
@@ -832,7 +833,7 @@ fn render_playlist_titlebar(frame: &mut Frame, area: Rect, _app: &App, sc: &SC) 
 fn render_playlist_body(frame: &mut Frame, area: Rect, app: &mut App, sc: &SC) {
     if app.results.is_empty() {
         let msg = match &app.status {
-            Status::Searching(t) | Status::Scanning(t) => t.clone(),
+            Status::Searching(t) | Status::Scanning(t) | Status::Downloading(t) => t.clone(),
             Status::Error(t) => t.clone(),
             _ => "No tracks loaded — press / to search".into(),
         };
@@ -960,22 +961,31 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
 
     // Key hints bar
     let hints = match app.mode {
-        Mode::Browse => vec![
-            Span::styled(" /", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-            Span::styled(" search ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
-            Span::styled("j/k", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-            Span::styled(" nav ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
-            Span::styled("Enter", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-            Span::styled(" play ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
-            Span::styled("Space", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-            Span::styled(" pause ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
-            Span::styled("Tab", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-            Span::styled(" src ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
-            Span::styled("S", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-            Span::styled(" settings ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
-            Span::styled("q", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-            Span::styled(" quit", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
-        ],
+        Mode::Browse => {
+            let mut v = vec![
+                Span::styled(" /", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
+                Span::styled(" search ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
+                Span::styled("j/k", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
+                Span::styled(" nav ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
+                Span::styled("Enter", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
+                Span::styled(" play ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
+            ];
+            if matches!(app.active_source, SourceKind::Extractor(_)) {
+                v.push(Span::styled("d", Style::default().fg(sc.led_on).bg(sc.chrome_dark)));
+                v.push(Span::styled(" dl ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)));
+            }
+            v.extend_from_slice(&[
+                Span::styled("Space", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
+                Span::styled(" pause ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
+                Span::styled("Tab", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
+                Span::styled(" src ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
+                Span::styled("S", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
+                Span::styled(" settings ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
+                Span::styled("q", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
+                Span::styled(" quit", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
+            ]);
+            v
+        }
         Mode::Input => vec![
             Span::styled(" Enter", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
             Span::styled(" submit ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),

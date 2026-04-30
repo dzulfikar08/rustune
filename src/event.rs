@@ -31,4 +31,8 @@ pub enum AppEvent {
         filename: String,
         result: Result<()>,
     },
+    DownloadComplete {
+        title: String,
+        result: Result<()>,
+    },
 }

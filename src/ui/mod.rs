@@ -97,5 +97,5 @@ fn draw_standard(frame: &mut Frame, app: &mut App) {
     results::render(frame, vertical[0], app);
     player::render(frame, player_chunks[0], player_chunks[1], app);
     input::render(frame, vertical[2], app);
-    help::render(frame, vertical[3], &app.mode, &app.theme);
+    help::render(frame, vertical[3], &app.mode, &app.active_source, &app.theme);
 }

@@ -353,6 +353,9 @@ fn handle_key(
                         let _ = scan_local(app);
                     }
                 }
+                BrowseAction::Download(id, title) => {
+                    download_audio(app, id, title, tx);
+                }
                 BrowseAction::None => {}
             }
         }
@@ -360,11 +363,11 @@ fn handle_key(
             let action = app.handle_input_key(key);
             match action {
                 InputAction::Search(_query) => {
-                    // Switch to extractor source for search
-                    if registry.first_available().is_some() {
-                        app.active_source = SourceKind::Extractor("ytdlp".into());
+                    if matches!(app.active_source, SourceKind::Local) {
+                        search_local(app);
+                    } else {
+                        dispatch_search(app, tx, registry);
                     }
-                    dispatch_search(app, tx, registry);
                 }
                 InputAction::None => {}
             }
@@ -605,6 +608,7 @@ fn scan_local(app: &mut App) -> Result<()> {
 
     match items {
         Ok(items) => {
+            app.local_library = items.clone();
             app.results = items;
             app.status = Status::Idle;
             if !app.results.is_empty() {
@@ -617,6 +621,18 @@ fn scan_local(app: &mut App) -> Result<()> {
             Err(e)
         }
     }
+}
+
+fn search_local(app: &mut App) {
+    let query = app.input_history.last().cloned().unwrap_or_default();
+    if query.is_empty() {
+        app.results = app.local_library.clone();
+    } else {
+        app.results = source::LocalSource::search(&app.local_library, &query);
+    }
+    app.list_state.select(Some(0));
+    app.page = 0;
+    app.status = Status::Idle;
 }
 
 fn handle_app_event(
@@ -744,6 +760,19 @@ fn handle_app_event(
                 }
                 Err(e) => {
                     app.skin_browser_error = Some(format!("Download failed: {e}"));
+                }
+            }
+        }
+        AppEvent::DownloadComplete { title, result } => {
+            app.downloading_title = None;
+            match result {
+                Ok(()) => {
+                    app.active_source = SourceKind::Local;
+                    let _ = scan_local(app);
+                    app.status = Status::Idle;
+                }
+                Err(e) => {
+                    app.status = Status::Error(format!("Download failed ({title}): {e}"));
                 }
             }
         }
@@ -1079,6 +1108,61 @@ async fn fetch_skin_list_inner(
     entries.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
 
     Ok((entries, total_count))
+}
+
+fn download_audio(
+    app: &mut App,
+    id: String,
+    title: String,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    let music_dir = app.config.music_dir.clone();
+    app.downloading_title = Some(title.clone());
+    app.status = Status::Downloading(title.clone());
+
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = download_audio_inner(&id, &title, &music_dir).await;
+        let _ = tx.send(AppEvent::DownloadComplete {
+            title,
+            result,
+        });
+    });
+}
+
+async fn download_audio_inner(id: &str, title: &str, music_dir: &std::path::Path) -> anyhow::Result<()> {
+    let safe_title: String = title
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            _ => c,
+        })
+        .collect();
+    let output_template = music_dir.join(format!("{safe_title}.%(ext)s"));
+    let url = format!("https://www.youtube.com/watch?v={id}");
+
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(300),
+        tokio::process::Command::new("yt-dlp")
+            .arg("-x")
+            .arg("--audio-format")
+            .arg("best")
+            .arg("--embed-thumbnail")
+            .arg("-o")
+            .arg(&output_template)
+            .arg(&url)
+            .output(),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("Download timed out."))?
+    .map_err(|e| anyhow::anyhow!("Failed to run yt-dlp: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("{}", stderr.trim());
+    }
+
+    Ok(())
 }
 
 /// Download a skin from the webamp CDN and save it to the skins directory.

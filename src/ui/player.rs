@@ -62,6 +62,21 @@ pub fn render(
                 let info = Line::from(Span::styled(format!(" {text}"), theme.loading_text));
                 frame.render_widget(Paragraph::new(info), info_area);
             }
+            Status::Downloading(text) => {
+                let info = Line::from(vec![
+                    Span::styled(" \u{2B07} ", theme.loading_text),
+                    Span::styled(truncate(text, 60), theme.loading_text),
+                ]);
+                frame.render_widget(Paragraph::new(info), info_area);
+
+                let gauge = LineGauge::default()
+                    .ratio(0.0)
+                    .label(Span::styled("downloading...", theme.gauge_label))
+                    .filled_style(theme.gauge_filled)
+                    .unfilled_style(theme.gauge_unfilled)
+                    .line_set(ratatui::symbols::line::THICK);
+                frame.render_widget(gauge, gauge_area);
+            }
             _ => {
                 frame.render_widget(Paragraph::new(Line::from("")), info_area);
             }

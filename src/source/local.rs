@@ -28,6 +28,23 @@ impl LocalSource {
         Ok(items)
     }
 
+    /// Filter a pre-scanned list by a search query (case-insensitive substring match
+    /// on title and subtitle).
+    pub fn search(items: &[MediaItem], query: &str) -> Vec<MediaItem> {
+        let q = query.to_lowercase();
+        items
+            .iter()
+            .filter(|item| {
+                item.title.to_lowercase().contains(&q)
+                    || item
+                        .subtitle
+                        .as_ref()
+                        .map_or(false, |s| s.to_lowercase().contains(&q))
+            })
+            .cloned()
+            .collect()
+    }
+
     fn scan_dir(&self, dir: &std::path::Path, items: &mut Vec<MediaItem>) -> Result<()> {
         let entries = std::fs::read_dir(dir).context(format!("Failed to read dir: {}", dir.display()))?;
 

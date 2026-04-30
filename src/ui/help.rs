@@ -5,26 +5,36 @@ use ratatui::{
 };
 
 use crate::app::Mode;
+use crate::media::SourceKind;
 use crate::theme::Theme;
 
-pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, mode: &Mode, theme: &Theme) {
+pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, mode: &Mode, source: &SourceKind, theme: &Theme) {
     let hints = match mode {
-        Mode::Browse => vec![
-            Span::styled(" /", theme.help_key),
-            Span::styled(" search ", theme.help_desc),
-            Span::styled("j/k", theme.help_key),
-            Span::styled(" nav ", theme.help_desc),
-            Span::styled("Enter", theme.help_key),
-            Span::styled(" play ", theme.help_desc),
-            Span::styled("Space", theme.help_key),
-            Span::styled(" pause ", theme.help_desc),
-            Span::styled("Tab", theme.help_key),
-            Span::styled(" source ", theme.help_desc),
-            Span::styled("S", theme.help_key),
-            Span::styled(" settings ", theme.help_desc),
-            Span::styled("q", theme.help_key),
-            Span::styled(" quit", theme.help_desc),
-        ],
+        Mode::Browse => {
+            let mut v = vec![
+                Span::styled(" /", theme.help_key),
+                Span::styled(" search ", theme.help_desc),
+                Span::styled("j/k", theme.help_key),
+                Span::styled(" nav ", theme.help_desc),
+                Span::styled("Enter", theme.help_key),
+                Span::styled(" play ", theme.help_desc),
+            ];
+            if matches!(source, SourceKind::Extractor(_)) {
+                v.push(Span::styled("d", theme.help_key));
+                v.push(Span::styled(" download ", theme.help_desc));
+            }
+            v.extend_from_slice(&[
+                Span::styled("Space", theme.help_key),
+                Span::styled(" pause ", theme.help_desc),
+                Span::styled("Tab", theme.help_key),
+                Span::styled(" source ", theme.help_desc),
+                Span::styled("S", theme.help_key),
+                Span::styled(" settings ", theme.help_desc),
+                Span::styled("q", theme.help_key),
+                Span::styled(" quit", theme.help_desc),
+            ]);
+            v
+        }
         Mode::Input => vec![
             Span::styled(" Enter", theme.help_key),
             Span::styled(" submit ", theme.help_desc),
