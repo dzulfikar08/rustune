@@ -37,6 +37,24 @@ Download the latest binary for your platform from the [Releases](https://github.
 
 **macOS users**: Download the `.dmg` for a signed & notarized app experience, or the bare binary if you prefer the terminal-only approach.
 
+#### Installing the bare binary
+
+```bash
+mkdir -p ~/.local/bin
+cp ~/Downloads/rustune-aarch64-macos ~/.local/bin/rustune
+chmod +x ~/.local/bin/rustune
+```
+
+> On Linux, the file is `rustune-x86_64-linux`. On Intel Macs, use `rustune-x86_64-macos`.
+
+Then add `~/.local/bin` to your PATH (if not already) in `~/.zshrc`:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+After that, just run `rustune` from anywhere.
+
 ### From Source (cargo)
 
 ```bash
