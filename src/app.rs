@@ -4,6 +4,7 @@ use ratatui::widgets::ListState;
 
 use crate::config::Config;
 use crate::media::{MediaItem, SourceKind};
+use crate::player::LocalHandle;
 use crate::skin::WinampSkin;
 use crate::theme::Theme;
 use crate::ui::skin_layout::SkinLayout;
@@ -123,7 +124,8 @@ pub struct App {
     pub playback: Option<PlaybackState>,
     pub status: Status,
     pub should_quit: bool,
-    pub mpv_kill: Option<tokio::sync::oneshot::Sender<()>>,
+    pub local_player: Option<LocalHandle>,
+    pub mpv: Option<crate::player::MpvHandle>,
     pub layout_rects: LayoutRects,
     // New fields
     pub config: Config,
@@ -211,7 +213,8 @@ impl App {
             playback: None,
             status: Status::Idle,
             should_quit: false,
-            mpv_kill: None,
+            local_player: None,
+            mpv: None,
             layout_rects: LayoutRects::default(),
             config,
             theme,
@@ -279,9 +282,12 @@ impl App {
         self.list_state.selected().map(|i| &self.results[i])
     }
 
-    pub fn kill_mpv(&mut self) {
-        if let Some(kill) = self.mpv_kill.take() {
-            let _ = kill.send(());
+    pub fn kill_playback(&mut self) {
+        if let Some(mpv) = self.mpv.take() {
+            mpv.shutdown();
+        }
+        if let Some(local) = self.local_player.take() {
+            local.shutdown();
         }
         self.playback = None;
     }
@@ -304,14 +310,14 @@ impl App {
         use crossterm::event::{KeyCode, KeyModifiers};
 
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            self.kill_mpv();
+            self.kill_playback();
             self.should_quit = true;
             return BrowseAction::None;
         }
 
         match key.code {
             KeyCode::Char('q') => {
-                self.kill_mpv();
+                self.kill_playback();
                 self.should_quit = true;
                 BrowseAction::None
             }
@@ -388,7 +394,7 @@ impl App {
                 if let Some(cmd) = text.strip_prefix(':') {
                     match cmd.trim() {
                         "q" | "quit" => {
-                            self.kill_mpv();
+                            self.kill_playback();
                             self.should_quit = true;
                             return InputAction::None;
                         }

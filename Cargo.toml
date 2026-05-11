@@ -21,3 +21,6 @@ dirs = "6"
 async-trait = "0.1"
 zip = { version = "8.5.0", features = ["deflate"] }
 reqwest = { version = "0.12", features = ["rustls-tls", "json"], default-features = false }
+rodio = { version = "0.22", features = [
+    "symphonia-all",
+] }

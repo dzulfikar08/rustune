@@ -327,9 +327,11 @@ fn handle_key(
                         if let Some(ref mut pb) = app.playback {
                             pb.paused = new_paused;
                         }
-                        tokio::spawn(async move {
-                            let _ = player::set_pause(new_paused).await;
-                        });
+                        if let Some(ref local) = app.local_player {
+                            local.set_pause(new_paused);
+                        } else if let Some(ref mpv) = app.mpv {
+                            let _ = mpv.set_pause(new_paused);
+                        }
                     }
                 }
                 BrowseAction::OpenSettings => {
@@ -547,15 +549,12 @@ fn play_item(
     tx: &mpsc::UnboundedSender<AppEvent>,
     registry: &Arc<ExtractorRegistry>,
 ) {
-    app.kill_mpv();
-    app.status = Status::Loading("Loading stream...".into());
+    app.kill_playback();
+    app.status = Status::Loading("Loading...".into());
 
     match app.active_source {
         SourceKind::Local => {
-            // Local file — construct file:// URL directly
-            let url = format!("file://{}", id);
-            start_playback(app, url, title, tx);
-            let _ = title; // used in start_playback closure
+            start_local_playback(app, &id, &title, tx);
         }
         SourceKind::Extractor(ref name) => {
             if let Some(extractor) = registry.get(name) {
@@ -574,7 +573,46 @@ fn play_item(
     }
 }
 
-fn start_playback(
+fn start_local_playback(
+    app: &mut App,
+    path: &str,
+    title: &str,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    app.status = Status::Idle;
+    app.playback = Some(app::PlaybackState {
+        title: title.to_string(),
+        duration_secs: 0,
+        elapsed_secs: 0,
+        paused: false,
+    });
+
+    // Init local player lazily (keep it around even if it can't decode this file)
+    if app.local_player.is_none() {
+        if let Ok(handle) = player::LocalHandle::new(tx.clone()) {
+            app.local_player = Some(handle);
+        }
+    }
+
+    // Try pure Rust (rodio) playback
+    if let Some(ref local) = app.local_player {
+        if local.play_file(path).is_ok() {
+            if let Some(mpv) = app.mpv.take() {
+                mpv.shutdown();
+            }
+            return;
+        }
+    }
+
+    // Fallback: use mpv for formats rodio can't decode (opus, aac, wma, etc.)
+    if let Some(ref local) = app.local_player {
+        local.stop();
+    }
+    let url = format!("file://{}", path);
+    start_stream_playback(app, url, title.to_string(), tx);
+}
+
+fn start_stream_playback(
     app: &mut App,
     url: String,
     title: String,
@@ -588,13 +626,26 @@ fn start_playback(
         paused: false,
     });
 
-    let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<()>();
-    app.mpv_kill = Some(kill_tx);
+    // Stop local player if running (don't destroy — may reuse for next local file)
+    if let Some(ref local) = app.local_player {
+        local.stop();
+    }
 
-    let tx = tx.clone();
-    tokio::spawn(async move {
-        player::play(url, title, tx, kill_rx).await;
-    });
+    if app.mpv.is_none() {
+        match player::MpvHandle::new(tx.clone()) {
+            Ok(handle) => app.mpv = Some(handle),
+            Err(e) => {
+                app.status = Status::Error(format!("Failed to start mpv: {e}"));
+                return;
+            }
+        }
+    }
+
+    if let Some(ref mpv) = app.mpv {
+        if let Err(e) = mpv.loadfile(&url) {
+            app.status = Status::Error(format!("Playback failed: {e}"));
+        }
+    }
 }
 
 fn scan_local(app: &mut App) -> Result<()> {
@@ -659,7 +710,7 @@ fn handle_app_event(
         AppEvent::StreamReady(result) => {
             match result {
                 Ok(info) => {
-                    start_playback(app, info.url, info.title, tx);
+                    start_stream_playback(app, info.url, info.title, tx);
                 }
                 Err(e) => {
                     app.status = Status::Error(format!("Playback failed: {e}"));
@@ -677,11 +728,9 @@ fn handle_app_event(
         }
         AppEvent::PlaybackComplete => {
             app.playback = None;
-            app.mpv_kill = None;
         }
         AppEvent::PlaybackError(msg) => {
             app.playback = None;
-            app.mpv_kill = None;
             app.status = Status::Error(msg);
         }
         AppEvent::ExtractorStatus { name, status } => {
@@ -795,10 +844,10 @@ fn handle_mouse(
             }
         }
         MouseAction::Seek(position_secs) => {
-            if app.playback.is_some() {
-                tokio::spawn(async move {
-                    let _ = player::seek_to(position_secs).await;
-                });
+            if let Some(ref local) = app.local_player {
+                let _ = local.seek_to(std::time::Duration::from_secs_f64(position_secs));
+            } else if let Some(ref mpv) = app.mpv {
+                let _ = mpv.seek_to(position_secs);
             }
         }
         MouseAction::TogglePause => {
@@ -807,9 +856,11 @@ fn handle_mouse(
                 if let Some(ref mut pb) = app.playback {
                     pb.paused = new_paused;
                 }
-                tokio::spawn(async move {
-                    let _ = player::set_pause(new_paused).await;
-                });
+                if let Some(ref local) = app.local_player {
+                    local.set_pause(new_paused);
+                } else if let Some(ref mpv) = app.mpv {
+                    let _ = mpv.set_pause(new_paused);
+                }
             }
         }
         MouseAction::PrevPage => {
