@@ -91,32 +91,6 @@ MORE:
 async fn run_doctor() {
     println!("rustune {} — doctor\n", env!("CARGO_PKG_VERSION"));
 
-    // Check mpv
-    let mpv_ok = match player::check_mpv().await {
-        Ok(()) => {
-            // Try to get version
-            let output = tokio::process::Command::new("mpv")
-                .arg("--version")
-                .output()
-                .await
-                .ok();
-            let version = output
-                .and_then(|o| {
-                    let stdout = String::from_utf8_lossy(&o.stdout);
-                    let first_line = stdout.lines().next().unwrap_or("");
-                    Some(first_line.to_string())
-                })
-                .unwrap_or_else(|| "unknown".to_string());
-            println!("  [ok] mpv: {}", version.split_whitespace().take(2).collect::<Vec<_>>().join(" "));
-            true
-        }
-        Err(e) => {
-            println!("  [MISSING] mpv: {e}");
-            println!("            Install from: https://mpv.io");
-            false
-        }
-    };
-
     // Check yt-dlp
     let ytdlp_ok = match std::process::Command::new("yt-dlp")
         .arg("--version")
@@ -160,13 +134,10 @@ async fn run_doctor() {
 
     println!();
 
-    if mpv_ok && ytdlp_ok {
+    if ytdlp_ok {
         println!("All good! Run 'rustune' to start playing.");
-    } else if mpv_ok {
-        println!("mpv is ready. Install yt-dlp for online audio search.");
     } else {
-        println!("mpv is required for playback. Install it first.");
-        std::process::exit(1);
+        println!("Install yt-dlp for online audio search and playback.");
     }
 }
 
@@ -176,13 +147,8 @@ async fn async_main() -> Result<()> {
     // Ensure the default Winamp skin (base-2.91) is available on disk
     ensure_default_skin().await;
 
-    // Check mpv (required for all playback)
-    if let Err(e) = player::check_mpv().await {
-        if config.onboarding_done {
-            eprintln!("Error: {e}");
-            std::process::exit(1);
-        }
-    }
+    // Clean up stale temp audio files from previous sessions
+    player::clean_temp_dir();
 
     let terminal = ratatui::init();
     crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
@@ -231,13 +197,9 @@ async fn run(mut terminal: DefaultTerminal, config: config::Config) -> Result<()
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
 
         // Check for pending dependency install (must happen outside terminal.draw)
-        if let Some(dep_idx) = app.pending_install.take() {
-            let (mpv_cmd, ytdlp_cmd) = get_install_commands();
-            let (label, cmd) = if dep_idx == 0 {
-                ("mpv", mpv_cmd)
-            } else {
-                ("yt-dlp", ytdlp_cmd)
-            };
+        if let Some(_dep_idx) = app.pending_install.take() {
+            let ytdlp_cmd = get_install_commands();
+            let (label, cmd) = ("yt-dlp", ytdlp_cmd);
 
             if let Some((program, args)) = cmd {
                 let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
@@ -249,13 +211,9 @@ async fn run(mut terminal: DefaultTerminal, config: config::Config) -> Result<()
                     app.status = Status::Error(format!("{label} installation failed"));
                 }
             } else {
-                // No auto-install available (e.g. Windows)
+                // No auto-install available
                 ratatui::restore();
-                if dep_idx == 0 {
-                    println!("\n  Please install mpv manually from https://mpv.io");
-                } else {
-                    println!("\n  Please install yt-dlp manually from https://github.com/yt-dlp/yt-dlp");
-                }
+                println!("\n  Please install yt-dlp manually from https://github.com/yt-dlp/yt-dlp");
                 println!("\nPress Enter to return to rustune...");
                 let mut buf = String::new();
                 let _ = std::io::stdin().read_line(&mut buf);
@@ -329,8 +287,6 @@ fn handle_key(
                         }
                         if let Some(ref local) = app.local_player {
                             local.set_pause(new_paused);
-                        } else if let Some(ref mpv) = app.mpv {
-                            let _ = mpv.set_pause(new_paused);
                         }
                     }
                 }
@@ -550,22 +506,22 @@ fn play_item(
     registry: &Arc<ExtractorRegistry>,
 ) {
     app.kill_playback();
-    app.status = Status::Loading("Loading...".into());
 
     match app.active_source {
         SourceKind::Local => {
             start_local_playback(app, &id, &title, tx);
         }
         SourceKind::Extractor(ref name) => {
+            app.status = Status::Downloading(format!("Downloading: {title}"));
             if let Some(extractor) = registry.get(name) {
                 let ext = extractor.clone();
                 let tx = tx.clone();
                 let id = id.clone();
                 let title = title.clone();
-                tokio::spawn(async move {
+                app.stream_task = Some(tokio::spawn(async move {
                     let result = ext.resolve(&id, &title).await;
                     let _ = tx.send(AppEvent::StreamReady(result));
-                });
+                }));
             } else {
                 app.status = Status::Error(format!("Extractor '{}' not found", name));
             }
@@ -587,66 +543,26 @@ fn start_local_playback(
         paused: false,
     });
 
-    // Init local player lazily (keep it around even if it can't decode this file)
+    // Clean up previous temp playback file
+    if let Some(prev) = app.temp_playback_path.take() {
+        let _ = std::fs::remove_file(&prev);
+    }
+
+    // Init local player lazily
     if app.local_player.is_none() {
         if let Ok(handle) = player::LocalHandle::new(tx.clone()) {
             app.local_player = Some(handle);
         }
     }
 
-    // Try pure Rust (rodio) playback
     if let Some(ref local) = app.local_player {
-        if local.play_file(path).is_ok() {
-            if let Some(mpv) = app.mpv.take() {
-                mpv.shutdown();
-            }
-            return;
-        }
-    }
-
-    // Fallback: use mpv for formats rodio can't decode (opus, aac, wma, etc.)
-    if let Some(ref local) = app.local_player {
-        local.stop();
-    }
-    let url = format!("file://{}", path);
-    start_stream_playback(app, url, title.to_string(), tx);
-}
-
-fn start_stream_playback(
-    app: &mut App,
-    url: String,
-    title: String,
-    tx: &mpsc::UnboundedSender<AppEvent>,
-) {
-    app.status = Status::Idle;
-    app.playback = Some(app::PlaybackState {
-        title: title.clone(),
-        duration_secs: 0,
-        elapsed_secs: 0,
-        paused: false,
-    });
-
-    // Stop local player if running (don't destroy — may reuse for next local file)
-    if let Some(ref local) = app.local_player {
-        local.stop();
-    }
-
-    if app.mpv.is_none() {
-        match player::MpvHandle::new(tx.clone()) {
-            Ok(handle) => app.mpv = Some(handle),
-            Err(e) => {
-                app.status = Status::Error(format!("Failed to start mpv: {e}"));
-                return;
-            }
-        }
-    }
-
-    if let Some(ref mpv) = app.mpv {
-        if let Err(e) = mpv.loadfile(&url) {
-            app.status = Status::Error(format!("Playback failed: {e}"));
+        if let Err(e) = local.play_file(path) {
+            app.status = Status::Error(format!("Cannot play file: {e}"));
+            app.playback = None;
         }
     }
 }
+
 
 fn scan_local(app: &mut App) -> Result<()> {
     let music_dir = app.config.music_dir.clone();
@@ -710,7 +626,13 @@ fn handle_app_event(
         AppEvent::StreamReady(result) => {
             match result {
                 Ok(info) => {
-                    start_stream_playback(app, info.url, info.title, tx);
+                    // Track temp file path for cleanup
+                    let file_path = info.url.strip_prefix("file://").unwrap_or(&info.url);
+                    let path_buf = std::path::PathBuf::from(file_path);
+                    if path_buf.starts_with(std::env::temp_dir()) {
+                        app.temp_playback_path = Some(path_buf);
+                    }
+                    start_local_playback(app, &info.url, &info.title, tx);
                 }
                 Err(e) => {
                     app.status = Status::Error(format!("Playback failed: {e}"));
@@ -846,8 +768,6 @@ fn handle_mouse(
         MouseAction::Seek(position_secs) => {
             if let Some(ref local) = app.local_player {
                 let _ = local.seek_to(std::time::Duration::from_secs_f64(position_secs));
-            } else if let Some(ref mpv) = app.mpv {
-                let _ = mpv.seek_to(position_secs);
             }
         }
         MouseAction::TogglePause => {
@@ -858,8 +778,6 @@ fn handle_mouse(
                 }
                 if let Some(ref local) = app.local_player {
                     local.set_pause(new_paused);
-                } else if let Some(ref mpv) = app.mpv {
-                    let _ = mpv.set_pause(new_paused);
                 }
             }
         }
@@ -919,20 +837,9 @@ fn install_dependency(label: &str, program: &str, args: &[&str]) -> (bool, Defau
 }
 
 #[cfg(unix)]
-fn get_install_commands() -> (Option<(String, Vec<String>)>, Option<(String, Vec<String>)>) {
-    // mpv install command
-    let mpv_cmd = if std::path::Path::new("/opt/homebrew/bin/brew").exists()
-        || which_exists("brew")
-    {
-        Some(("brew".to_string(), vec!["install".to_string(), "mpv".to_string()]))
-    } else if which_exists("apt") {
-        Some(("sudo".to_string(), vec!["apt".to_string(), "install".to_string(), "-y".to_string(), "mpv".to_string()]))
-    } else {
-        None
-    };
-
+fn get_install_commands() -> Option<(String, Vec<String>)> {
     // yt-dlp install command
-    let ytdlp_cmd = if std::path::Path::new("/opt/homebrew/bin/brew").exists()
+    if std::path::Path::new("/opt/homebrew/bin/brew").exists()
         || which_exists("brew")
     {
         Some(("brew".to_string(), vec!["install".to_string(), "yt-dlp".to_string()]))
@@ -942,15 +849,12 @@ fn get_install_commands() -> (Option<(String, Vec<String>)>, Option<(String, Vec
         Some(("pip".to_string(), vec!["install".to_string(), "yt-dlp".to_string()]))
     } else {
         None
-    };
-
-    (mpv_cmd, ytdlp_cmd)
+    }
 }
 
 #[cfg(not(unix))]
-fn get_install_commands() -> (Option<(String, Vec<String>)>, Option<(String, Vec<String>)>) {
-    // No auto-install on Windows
-    (None, None)
+fn get_install_commands() -> Option<(String, Vec<String>)> {
+    None
 }
 
 #[cfg(unix)]
@@ -1195,10 +1099,8 @@ async fn download_audio_inner(id: &str, title: &str, music_dir: &std::path::Path
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(300),
         tokio::process::Command::new("yt-dlp")
-            .arg("-x")
-            .arg("--audio-format")
-            .arg("best")
-            .arg("--embed-thumbnail")
+            .arg("-f")
+            .arg("bestaudio[acodec!=opus]/bestaudio")
             .arg("-o")
             .arg(&output_template)
             .arg(&url)

@@ -17,8 +17,6 @@ pub struct Config {
     pub search_timeout_secs: u64,
     #[serde(default = "default_page_size")]
     pub page_size: usize,
-    #[serde(default)]
-    pub mpv_args: Vec<String>,
 }
 
 fn default_music_dir() -> PathBuf {
@@ -101,7 +99,6 @@ impl Default for Config {
             extractor: default_extractor(),
             search_timeout_secs: default_timeout(),
             page_size: default_page_size(),
-            mpv_args: Vec::new(),
         }
     }
 }

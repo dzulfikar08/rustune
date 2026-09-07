@@ -17,7 +17,7 @@ pub enum SourceKind {
     Extractor(String), // e.g. "ytdlp"
 }
 
-/// Resolved stream info ready for mpv playback.
+/// Resolved stream info ready for playback.
 #[derive(Debug, Clone)]
 pub struct StreamInfo {
     /// `file://` path for local, stream URL for extractor.

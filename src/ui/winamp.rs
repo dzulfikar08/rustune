@@ -299,7 +299,7 @@ fn render_bitmap_marquee(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let title = match &app.playback {
         Some(pb) => pb.title.clone(),
         None => match &app.status {
-            Status::Loading(t) | Status::Searching(t) | Status::Scanning(t) | Status::Downloading(t) => t.clone(),
+            Status::Searching(t) | Status::Scanning(t) | Status::Downloading(t) => t.clone(),
             Status::Error(t) => t.clone(),
             _ => "  ***  rustune  ***  ".into(),
         },
@@ -621,7 +621,7 @@ fn render_marquee(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let title = match &app.playback {
         Some(pb) => pb.title.clone(),
         None => match &app.status {
-            Status::Loading(t) | Status::Searching(t) | Status::Scanning(t) | Status::Downloading(t) => t.clone(),
+            Status::Searching(t) | Status::Scanning(t) | Status::Downloading(t) => t.clone(),
             Status::Error(t) => t.clone(),
             _ => "  ***  rustune  ***  ".into(),
         },

@@ -77,17 +77,7 @@ fn render_welcome(frame: &mut Frame, area: Rect, theme: &Theme) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn render_dependencies(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    // Check mpv status
-    let mpv_status = match std::process::Command::new("mpv").arg("--version").output() {
-        Ok(o) if o.status.success() => {
-            let v = String::from_utf8_lossy(&o.stdout);
-            let version = v.lines().next().unwrap_or("mpv");
-            (true, version.to_string())
-        }
-        _ => (false, "Not found".into()),
-    };
-
+fn render_dependencies(frame: &mut Frame, area: Rect, _app: &App, theme: &Theme) {
     // Check yt-dlp status
     let ytdlp_status = match std::process::Command::new("yt-dlp").arg("--version").output() {
         Ok(o) if o.status.success() => {
@@ -124,8 +114,6 @@ fn render_dependencies(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) 
         Line::from(spans)
     };
 
-    let sel = app.onboarding_dep_selected;
-
     let lines = vec![
         Line::from(""),
         Line::from(Span::styled(
@@ -133,11 +121,10 @@ fn render_dependencies(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) 
             Style::default().add_modifier(Modifier::BOLD).fg(ratatui::style::Color::Cyan),
         )),
         Line::from(""),
-        dep_line(mpv_status.0, "mpv (required)", &mpv_status.1, sel == 0),
-        dep_line(ytdlp_status.0, "yt-dlp (optional, for online search)", &ytdlp_status.1, sel == 1),
+        dep_line(ytdlp_status.0, "yt-dlp (for online playback)", &ytdlp_status.1, true),
         Line::from(""),
         Line::from(Span::styled(
-            "  j/k: select | i: install | Enter: continue",
+            "  i: install | Enter: continue",
             theme.help_key,
         )),
     ];

@@ -58,10 +58,6 @@ pub fn render(
             frame.render_widget(gauge, gauge_area);
         }
         None => match &app.status {
-            Status::Loading(text) => {
-                let info = Line::from(Span::styled(format!(" {text}"), theme.loading_text));
-                frame.render_widget(Paragraph::new(info), info_area);
-            }
             Status::Downloading(text) => {
                 let info = Line::from(vec![
                     Span::styled(" \u{2B07} ", theme.loading_text),

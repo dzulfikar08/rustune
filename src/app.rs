@@ -2,6 +2,8 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 use ratatui::widgets::ListState;
 
+use std::path::PathBuf;
+
 use crate::config::Config;
 use crate::media::{MediaItem, SourceKind};
 use crate::player::LocalHandle;
@@ -22,7 +24,6 @@ pub enum Mode {
 pub enum Status {
     Idle,
     Searching(String),
-    Loading(String),
     Scanning(String),
     Downloading(String),
     Error(String),
@@ -125,7 +126,8 @@ pub struct App {
     pub status: Status,
     pub should_quit: bool,
     pub local_player: Option<LocalHandle>,
-    pub mpv: Option<crate::player::MpvHandle>,
+    pub temp_playback_path: Option<PathBuf>,
+    pub stream_task: Option<tokio::task::JoinHandle<()>>,
     pub layout_rects: LayoutRects,
     // New fields
     pub config: Config,
@@ -134,8 +136,8 @@ pub struct App {
     pub skin_layout: Option<SkinLayout>,
     pub active_source: SourceKind,
     pub onboarding_step: OnboardingStep,
-    pub onboarding_dep_selected: usize, // 0 = mpv, 1 = yt-dlp
-    pub pending_install: Option<usize>,  // Some(0) = mpv, Some(1) = yt-dlp
+    pub onboarding_dep_selected: usize, // 0 = yt-dlp
+    pub pending_install: Option<usize>,  // Some(0) = yt-dlp
     pub settings_field: SettingsField,
     #[allow(dead_code)]
     pub settings_list_state: ListState,
@@ -214,7 +216,8 @@ impl App {
             status: Status::Idle,
             should_quit: false,
             local_player: None,
-            mpv: None,
+            temp_playback_path: None,
+            stream_task: None,
             layout_rects: LayoutRects::default(),
             config,
             theme,
@@ -283,11 +286,14 @@ impl App {
     }
 
     pub fn kill_playback(&mut self) {
-        if let Some(mpv) = self.mpv.take() {
-            mpv.shutdown();
+        if let Some(task) = self.stream_task.take() {
+            task.abort();
         }
         if let Some(local) = self.local_player.take() {
             local.shutdown();
+        }
+        if let Some(path) = self.temp_playback_path.take() {
+            let _ = std::fs::remove_file(&path);
         }
         self.playback = None;
     }
@@ -580,11 +586,11 @@ impl App {
             },
             OnboardingStep::Dependencies => match key.code {
                 KeyCode::Char('j') | KeyCode::Down => {
-                    self.onboarding_dep_selected = (self.onboarding_dep_selected + 1) % 2;
+                    self.onboarding_dep_selected = 0;
                     OnboardingAction::None
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    self.onboarding_dep_selected = (self.onboarding_dep_selected + 1) % 2;
+                    self.onboarding_dep_selected = 0;
                     OnboardingAction::None
                 }
                 KeyCode::Char('i') => {

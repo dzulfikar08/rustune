@@ -58,33 +58,42 @@ impl Extractor for YtdlpExtractor {
         let title = title.to_string();
         Box::pin(async move {
             let url = format!("https://www.youtube.com/watch?v={id}");
+
+            let temp_dir = std::env::temp_dir().join("rustune-streams");
+            std::fs::create_dir_all(&temp_dir)
+                .context("Failed to create temp directory for audio download")?;
+
+            let output_template = temp_dir.join("%(id)s.%(ext)s");
             let output = tokio::time::timeout(
                 Duration::from_secs(SEARCH_TIMEOUT_SECS),
                 tokio::process::Command::new("yt-dlp")
                     .arg("-f")
-                    .arg("bestaudio/best")
-                    .arg("--get-url")
+                    .arg("bestaudio[acodec!=opus]/bestaudio")
+                    .arg("-o")
+                    .arg(&output_template)
+                    .arg("--print")
+                    .arg("after_move:filepath")
                     .arg(&url)
                     .output(),
             )
             .await
-            .context("Stream extraction timed out.")?
-            .context("Failed to run yt-dlp for stream extraction")?;
+            .context("Audio download timed out.")?
+            .context("Failed to run yt-dlp for audio download")?;
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                anyhow::bail!("Stream extraction failed: {}", stderr.trim());
+                anyhow::bail!("Audio download failed: {}", stderr.trim());
             }
 
-            let stream_url = String::from_utf8_lossy(&output.stdout);
-            let stream_url = stream_url.trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let file_path = stdout.lines().last().unwrap_or("").trim();
 
-            if stream_url.is_empty() {
-                anyhow::bail!("No stream URL returned");
+            if file_path.is_empty() {
+                anyhow::bail!("No audio file downloaded");
             }
 
             Ok(StreamInfo {
-                url: stream_url,
+                url: format!("file://{file_path}"),
                 title,
             })
         })
