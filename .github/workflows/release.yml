@@ -84,11 +84,14 @@ jobs:
           chmod +x ${{ matrix.artifact }}
 
       # The .deb declares `libc6 (>= 2.34)`; fail if the binary needs more.
+      # Weak symbols (std's optional pidfd_spawnp etc.) don't count: the
+      # loader leaves them null on an older glibc.
       - name: Check the glibc requirement (Linux)
         if: runner.os == 'Linux'
         run: |
-          need=$(objdump -T ${{ matrix.artifact }} | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -n1)
-          echo "highest glibc symbol version: $need"
+          objdump -T ${{ matrix.artifact }} | grep -E 'GLIBC_2\.(3[5-9]|[4-9][0-9])' || true
+          need=$(objdump -T ${{ matrix.artifact }} | awk '$2 != "w"' | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -n1)
+          echo "highest glibc version of a strong symbol: $need"
           if [ "$(printf '%s\n' "$need" 2.34 | sort -V | tail -n1)" != 2.34 ]; then
             echo "::error::binary needs glibc $need; raise libc6 in [package.metadata.deb] depends"
             exit 1

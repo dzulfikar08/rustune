@@ -100,12 +100,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
-      - name: Bootstrap flake.lock
-        run: nix flake lock && git add flake.lock
-      - uses: actions/upload-artifact@v4
-        with:
-          name: flake-lock-${{ matrix.os }}
-          path: flake.lock
       - name: nix build
         run: nix build -L --no-update-lock-file
       - name: nix run
