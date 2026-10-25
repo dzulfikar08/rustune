@@ -74,7 +74,7 @@ pub fn help_text(program: &str) -> String {
     let mut keys = String::new();
     crate::keymap::write_help(&mut keys);
     format!(
-        "rustune {version} — terminal music player
+        "rustune {version}: terminal music player
 
 USAGE:
     {program} [FILE|DIR|URL|PLAYLIST]...   Play the given items (or open the library);
@@ -151,7 +151,7 @@ fn output_device() -> Option<String> {
 /// `rustune doctor`: report the audio output, optional tools and paths.
 /// Never fails; every external tool is optional.
 pub async fn doctor() {
-    println!("rustune {} — doctor\n", env!("CARGO_PKG_VERSION"));
+    println!("rustune {} doctor\n", env!("CARGO_PKG_VERSION"));
     match output_device() {
         Some(name) => println!("  [ok] audio output: {name}"),
         None => println!("  [!!] audio output: no default output device found"),
@@ -160,7 +160,7 @@ pub async fn doctor() {
     let report = |dep: Dep, status: &DepStatus, purpose: &str| match status {
         DepStatus::Found(version) => println!("  [ok] {}: {version}", dep.binary()),
         _ => println!(
-            "  [--] {}: not found (optional, {purpose}) — {}",
+            "  [--] {}: not found (optional, {purpose}), see {}",
             dep.binary(),
             dep.homepage()
         ),

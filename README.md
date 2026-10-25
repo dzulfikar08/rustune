@@ -1,6 +1,6 @@
 # rustune
 
-A lightweight terminal music player: a single small binary with no mpv or other runtime dependencies. Native Rust audio engine, visualizer, synced lyrics, Internet radio, podcasts, self-hosted servers and pixel-accurate Winamp skins — all in your terminal.
+A lightweight terminal music player: a single small binary with no mpv or other runtime dependencies. Native Rust audio engine, visualizer, synced lyrics, Internet radio, podcasts, self-hosted servers and pixel-accurate Winamp skins, all in your terminal.
 
 **[Website](https://rustune.dzulfikar.com)** | **[Releases](https://github.com/dzulfikar08/rustune/releases)** | **[Contributing](CONTRIBUTING.md)**
 
@@ -8,23 +8,23 @@ A lightweight terminal music player: a single small binary with no mpv or other 
 
 ## Features
 
-- **Native audio engine** (cpal + symphonia) — gapless playback, 10-band EQ with Winamp presets and preamp, ReplayGain (track/album), balance, volume
-- **Streams** — HTTP streams with ICY (now-playing) titles, radio playlists (`.pls` / `.m3u`); optional ffmpeg for exotic formats and HLS
-- **Visualizer** — `bars`, `braille`, `led`, `mirror`, `scope`, `spectrogram`, `fire`, or `none`
-- **Lyrics** — fetched from [LRCLIB](https://lrclib.net), synced line-by-line when available
+- **Native audio engine** (cpal + symphonia): gapless playback, 10-band EQ with Winamp presets and preamp, ReplayGain (track/album), balance, volume
+- **Streams**: HTTP streams with ICY (now-playing) titles, radio playlists (`.pls` / `.m3u`); optional ffmpeg for exotic formats and HLS
+- **Visualizer**: `bars`, `braille`, `led`, `mirror`, `scope`, `spectrogram`, `fire`, or `none`
+- **Lyrics**: fetched from [LRCLIB](https://lrclib.net), synced line-by-line when available
 - **Sources**
   - Local library (MP3, FLAC, OGG, WAV, M4A, AAC, OPUS, WMA)
   - Online search and download via yt-dlp (optional)
   - Internet radio ([Radio Browser](https://www.radio-browser.info))
   - Podcasts (iTunes charts and search, subscriptions)
   - Subsonic / Navidrome and Jellyfin / Emby, when configured
-- **Winamp 2.x skins** (`.wsz`) — pixel-accurate rendering with kitty, iTerm2 or sixel graphics, or a half-block fallback; a built-in browser for the whole [Winamp Skin Museum](https://skins.webamp.org/) (100,000+ skins) with a live preview of each skin
-- **Playlists** — load and save `.m3u` / `.pls`
-- **Session restore** — volume, balance, EQ, shuffle/repeat, visualizer, queue and resume position
-- **Themes** — Dark, Light and Winamp (`t` cycles, `:theme light` picks); full mouse support
-- **Command palette** — `?` / `Ctrl+K` lists every action for the current view with its key and current value, fuzzy-filtered as you type
-- **Remote control** — `rustune next`, `rustune status --json`, `rustune watch`, … over a local socket; a headless `--daemon` mode; `rustune FILE` queues into the running player instead of starting a second one
-- **Media keys and now-playing widgets** — MPRIS2 on Linux (`playerctl`, GNOME/KDE media controls), Now Playing and the media keys on macOS; in the TUI and in `--daemon` mode
+- **Winamp 2.x skins** (`.wsz`): pixel-accurate rendering with kitty, iTerm2 or sixel graphics, or a half-block fallback; a built-in browser for the whole [Winamp Skin Museum](https://skins.webamp.org/) (100,000+ skins) with a live preview of each skin
+- **Playlists**: load and save `.m3u` / `.pls`
+- **Session restore**: volume, balance, EQ, shuffle/repeat, visualizer, queue and resume position
+- **Themes**: Dark, Light and Winamp (`t` cycles, `:theme light` picks); full mouse support
+- **Command palette**: `?` / `Ctrl+K` lists every action for the current view with its key and current value, fuzzy-filtered as you type
+- **Remote control**: `rustune next`, `rustune status --json`, `rustune watch`, … over a local socket; a headless `--daemon` mode; `rustune FILE` queues into the running player instead of starting a second one
+- **Media keys and now-playing widgets**: MPRIS2 on Linux (`playerctl`, GNOME/KDE media controls), Now Playing and the media keys on macOS; in the TUI and in `--daemon` mode
 
 ## Screenshots
 
@@ -79,8 +79,8 @@ After that, just run `rustune` from anywhere.
 
 - To build: [Rust](https://rustup.rs/) (latest stable). On Linux, the ALSA development headers (`libasound2-dev` on Debian/Ubuntu, `alsa-lib-devel` on Fedora).
 - Optional at runtime:
-  - [yt-dlp](https://github.com/yt-dlp/yt-dlp) — online search and download
-  - [ffmpeg](https://ffmpeg.org/) — formats symphonia can't decode, and HLS streams
+  - [yt-dlp](https://github.com/yt-dlp/yt-dlp): online search and download
+  - [ffmpeg](https://ffmpeg.org/): formats symphonia can't decode, and HLS streams
 
 ### From Source (cargo)
 
@@ -101,9 +101,9 @@ cp target/release/rustune /usr/local/bin/
 
 When you launch rustune for the first time, it will guide you through a short setup:
 
-1. **Music directory** — Point rustune to your local music folder
-2. **Theme** — Choose between Dark, Light, or Winamp style
-3. **Ready** — Start browsing and playing
+1. **Music directory**: point rustune to your local music folder
+2. **Theme**: choose between Dark, Light, or Winamp style
+3. **Ready**: start browsing and playing
 
 To check optional tools and paths, run:
 
@@ -174,7 +174,7 @@ The tables below are generated from the key table in `src/keymap.rs` (the same t
 | `?` / `Ctrl+K` | Command palette: every action, filterable |
 | `q` / `Ctrl+C` | Quit |
 
-#### Lists (library, provider tabs, playlist window, skin browser)
+#### Lists (library, provider tabs, playlist, skin browser)
 
 | Key | Action |
 |-----|--------|
@@ -206,13 +206,14 @@ The tables below are generated from the key table in `src/keymap.rs` (the same t
 | `r` | Reload the current level |
 | `f` | Subscribe to or unsubscribe from the podcast |
 
-#### Playlist window (P)
+#### Playlist (the P window; in Winamp the skin's playlist editor)
 
 | Key | Action |
 |-----|--------|
 | `J` | Move the track down |
 | `K` | Move the track up |
 | `D` / `Del` | Remove the track from the queue |
+| `B` | Winamp: browse Radio, Podcasts, Subsonic or Jellyfin in the playlist editor |
 
 #### EQ panel (e)
 
@@ -350,7 +351,7 @@ media_controls = true
 
 ### Media keys
 
-With `media_controls = true` (the default) rustune shows up in the system's media controls, and media keys control it — in the TUI and in `--daemon` mode alike:
+With `media_controls = true` (the default) rustune shows up in the system's media controls, and media keys control it, in the TUI and in `--daemon` mode alike:
 
 - **Linux**: an MPRIS2 player on the D-Bus session bus (`org.mpris.MediaPlayer2.rustune`). Play, pause, stop, next, previous, seek, volume, shuffle and loop status all work, so do `playerctl` and desktop widgets; local files get cover art from a `cover.jpg`/`folder.jpg` next to them. rustune speaks D-Bus itself (no libdbus); without a session bus, media controls simply stay off.
 - **macOS**: Now Playing (title, artist, album, duration, position) and the media keys / Control Center (play, pause, next, previous, scrubbing).
@@ -414,7 +415,7 @@ The preview pane needs a terminal at least 70 columns wide. With kitty, iTerm2 o
 
 The terminal graphics protocol (kitty, iTerm2, sixel, or half-block fallback) is detected automatically; override it with the `graphics` config option.
 
-In Winamp mode the main, equalizer and playlist windows come from the skin's own bitmaps, and every button, slider and playlist row works with the mouse (click, drag, double-click to play, wheel to scroll). The playlist window shows the play queue: `l` opens files, folders, playlists or URLs, `/` loads matching library tracks (or yt-dlp results on the Online tab) into it, and `e` / `P` toggle the equalizer and playlist windows. Clicking the visualizer cycles analyzer → oscilloscope → off. Graphics need at least 275 columns in half-block mode; smaller terminals get a skin-coloured text layout. Provider browsing (radio, podcasts, Subsonic, Jellyfin) and the lyrics panel live in the Dark and Light themes.
+In Winamp mode the main, equalizer and playlist windows come from the skin's own bitmaps, and every button, slider and playlist row works with the mouse (click, drag, double-click to play, wheel to scroll). The playlist editor is the list you work in: `j` / `k` (or the arrows, `g` / `G`, `PgUp` / `PgDn`) move its highlight, `Enter` plays the highlighted track, `J` / `K` reorder and `D` removes it. `l` opens files, folders, playlists or URLs, `Tab` switches the source and `/` searches it: matching library tracks (or yt-dlp results on the Online tab) are loaded into the playlist. On the Radio, Podcasts, Subsonic and Jellyfin sources the playlist editor shows their menus instead (`Tab` onto the source, or `B`): `j` / `k` and `Enter` open folders, `Enter` on a station, episode or song loads that list into the playlist and plays it, and `Backspace` / `Esc` go back up, out of the root menu to the playlist. The two rows under the skin are drawn in your terminal's own colours: a status line (where you are, the source, the latest message, or the prompt while you type) and the keys that work right now, with `?` for all of them. `e` / `P` toggle the equalizer and playlist windows. Clicking the visualizer cycles analyzer → oscilloscope → off. Graphics need at least 275 columns in half-block mode; smaller terminals get a skin-coloured text layout. The lyrics panel lives in the Dark and Light themes.
 
 ## Disclaimer
 

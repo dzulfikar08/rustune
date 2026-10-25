@@ -22,7 +22,7 @@ use crate::app::{
     OnboardingAction, PlaybackState, SettingsAction, Status, Tab,
 };
 use crate::audio::{EngineEvent, Source, TrackInfo};
-use crate::browse::{self, BrowseOutcome, Services};
+use crate::browse::{self, BrowseOutcome, Browser, Services};
 use crate::command::Command;
 use crate::config::{self, Config};
 use crate::eq_presets;
@@ -30,6 +30,7 @@ use crate::event::AppEvent;
 use crate::extractor::{self, ExtractorRegistry, YtdlpExtractor};
 use crate::gfx::{GfxPainter, Protocol};
 use crate::install::{self, Dep, DepStatus};
+use crate::keymap::{self, Action, Ctx};
 use crate::library;
 use crate::media::{MediaItem, SourceKind};
 use crate::net;
@@ -255,7 +256,7 @@ impl Controller {
         playback.set_eq(app.eq);
         playback.set_replaygain(app.config.replaygain);
         if let Some(reason) = playback.error() {
-            app.error(format!("{reason} — playback is unavailable"));
+            app.error(format!("{reason}: playback is unavailable"));
         }
 
         Self {
@@ -487,7 +488,7 @@ impl Controller {
         };
         if name == "ytdlp" && self.app.deps.ytdlp == DepStatus::Missing {
             self.app
-                .error("yt-dlp is not installed — online search is unavailable");
+                .error("yt-dlp is not installed, so online search is unavailable");
             return;
         }
         self.app
@@ -949,7 +950,7 @@ impl Controller {
                                 self.app.queue.replace(items, Some(i));
                             }
                             None => {
-                                self.app.info("Queue is empty — press Enter on a track");
+                                self.app.info("Queue is empty: press Enter on a track");
                                 return;
                             }
                         }
@@ -1171,6 +1172,9 @@ impl Controller {
             return;
         }
         if self.app.is_winamp() {
+            if self.app.winamp_browser().is_some() && self.browser_mouse(&mouse) {
+                return;
+            }
             let view = self.app.player_view();
             if let Some(cmd) = self.winamp_ui.on_mouse(mouse, &view) {
                 self.apply(cmd);
@@ -1184,6 +1188,40 @@ impl Controller {
             MouseAction::PlayResult(i) => self.on_browse_action(BrowseAction::PlayResult(i)),
             MouseAction::PrevPage => self.on_browse_action(BrowseAction::PrevPage),
             MouseAction::NextPage => self.on_browse_action(BrowseAction::NextPage),
+        }
+    }
+
+    /// Winamp: clicks and the wheel on the provider rows drawn in the
+    /// playlist editor. A click highlights a row, a double click opens or
+    /// plays it. Returns whether the event was used.
+    fn browser_mouse(&mut self, mouse: &MouseEvent) -> bool {
+        let len = self.app.winamp_browser().map_or(0, Browser::len);
+        if let Some((index, double)) = self.winamp_ui.list_press(mouse, len) {
+            let subs = self.app.config.providers.podcast.subscriptions.clone();
+            if let Some(browser) = self.app.browser_mut() {
+                if double {
+                    let outcome = browser.activate(index, &subs);
+                    self.on_browse_outcome(outcome);
+                } else {
+                    browser.select(index);
+                }
+            }
+            return true;
+        }
+        if let Some(down) = self.winamp_ui.list_wheel(mouse) {
+            if let Some(browser) = self.app.browser_mut() {
+                browser.scroll(down);
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Winamp: show the provider tab's menus in the playlist editor.
+    fn open_browser(&mut self) {
+        if self.app.browser().is_some() {
+            self.app.winamp_browse = true;
+            self.winamp_ui.show_playlist = true;
         }
     }
 
@@ -1235,6 +1273,7 @@ impl Controller {
             BrowseAction::OpenSettings => self.app.mode = Mode::Settings,
             BrowseAction::ClearQueue => self.clear_queue(),
             BrowseAction::SwitchTab(forward) => self.switch_tab(forward),
+            BrowseAction::OpenBrowser => self.open_browser(),
             BrowseAction::Download(id, title) => {
                 if self.app.deps.ytdlp == DepStatus::Missing {
                     self.app.error("yt-dlp is not installed");
@@ -1293,8 +1332,19 @@ impl Controller {
                 self.app.open_prompt(InputPurpose::ProviderSearch);
             }
             BrowseOutcome::Play { items, index } => {
+                let n = items.len();
                 self.app.queue.replace(items, Some(index));
+                if self.app.is_winamp() {
+                    // Back to the queue, which now holds the level's tracks.
+                    self.app.winamp_browse = false;
+                    self.app.info(format!(
+                        "{n} item{} from {} in the playlist",
+                        if n == 1 { "" } else { "s" },
+                        self.app.browser().map_or_else(String::new, Browser::title)
+                    ));
+                }
                 self.play_current();
+                self.mark_dirty();
             }
             BrowseOutcome::Enqueue(item) => self.enqueue(item),
             BrowseOutcome::PlayNext(item) => self.play_next(item),
@@ -1340,7 +1390,7 @@ impl Controller {
                 self.app.results.clear();
                 if self.app.deps.ytdlp == DepStatus::Missing {
                     self.app.error(
-                        "yt-dlp is not installed — online search is unavailable (see `rustune doctor`)",
+                        "yt-dlp is not installed, so online search is unavailable (see `rustune doctor`)",
                     );
                 }
             }
@@ -1348,6 +1398,23 @@ impl Controller {
         }
         self.app.page = 0;
         self.app.list_state.select(Some(0));
+        if self.app.is_winamp() {
+            // Menu sources open in the playlist editor; the others fill
+            // the queue through `/`.
+            self.app.winamp_browse = false;
+            match next {
+                Tab::Provider(_) => self.open_browser(),
+                _ if matches!(self.app.status, Status::Error(_)) => {}
+                _ => {
+                    let search = keymap::first_key(Ctx::PLAYLIST, Action::Search)
+                        .map_or_else(String::new, |k| k.to_string());
+                    self.app.info(format!(
+                        "Source: {}. Press {search} to search it into the playlist",
+                        next.label()
+                    ));
+                }
+            }
+        }
     }
 
     fn on_submit(&mut self, purpose: InputPurpose, text: String) {
@@ -1362,7 +1429,10 @@ impl Controller {
                         // The skin shows the queue: load the matches into it.
                         let items = self.app.results.clone();
                         self.app.queue.replace(items, None);
-                        self.app.info(format!("{n} tracks in the playlist"));
+                        self.app.info(format!(
+                            "{n} match{} from Local in the playlist",
+                            if n == 1 { "" } else { "es" }
+                        ));
                         self.mark_dirty();
                     } else {
                         self.app
@@ -1376,10 +1446,13 @@ impl Controller {
                     let outcome = browser.search(text);
                     self.on_browse_outcome(outcome);
                 }
+                if self.app.is_winamp() {
+                    self.open_browser();
+                }
             }
             InputPurpose::SavePlaylist => {
                 if self.app.queue.is_empty() {
-                    self.app.error("Queue is empty — nothing to save");
+                    self.app.error("Queue is empty, nothing to save");
                     return;
                 }
                 match playlist_io::save_named(
@@ -1557,6 +1630,11 @@ impl Controller {
                         if self.app.is_winamp() && !items.is_empty() {
                             // The skin shows the queue: load the results into it.
                             self.app.queue.replace(items.clone(), None);
+                            self.app.info(format!(
+                                "{} results from {} in the playlist",
+                                items.len(),
+                                self.app.tab.label()
+                            ));
                             self.mark_dirty();
                         }
                         self.app.results = items;
@@ -2407,6 +2485,46 @@ mod tests {
         assert_eq!(ctl.app.tab, Tab::Local);
         ctl.on_browse_action(BrowseAction::SwitchTab(false));
         assert_eq!(ctl.app.tab, ctl.app.tabs[n - 1], "wraps backwards");
+    }
+
+    #[test]
+    fn winamp_tab_opens_provider_menus_and_playing_returns_to_the_queue() {
+        let (mut ctl, _rec, _rx) = with_engine();
+        ctl.app.theme = Theme::from_name("Winamp");
+        ctl.app.library_scanned = true;
+        ctl.app.deps.ytdlp = DepStatus::Found("test".into());
+        ctl.winamp_ui.show_playlist = false;
+        ctl.on_browse_action(BrowseAction::SwitchTab(true));
+        assert_eq!(ctl.app.tab, Tab::Online);
+        assert!(!ctl.app.winamp_browse);
+        assert!(
+            matches!(&ctl.app.status, Status::Info(m) if m.starts_with("Source: Online. Press / to search")),
+            "{:?}",
+            ctl.app.status
+        );
+        ctl.on_browse_action(BrowseAction::SwitchTab(true));
+        assert_eq!(ctl.app.tab, Tab::Provider(ProviderKind::Radio));
+        assert!(
+            ctl.app.winamp_browse,
+            "menu sources open in the playlist editor"
+        );
+        assert!(ctl.winamp_ui.show_playlist);
+        ctl.on_browse_outcome(BrowseOutcome::Play {
+            items: (0..3).map(url_item).collect(),
+            index: 1,
+        });
+        assert!(!ctl.app.winamp_browse, "back to the queue");
+        assert_eq!(ctl.app.queue.len(), 3);
+        assert_eq!(ctl.app.queue.current_index(), Some(1));
+        assert!(
+            matches!(&ctl.app.status, Status::Info(m) if m == "3 items from Radio in the playlist"),
+            "{:?}",
+            ctl.app.status
+        );
+        // Leaving for a non-menu source closes the menus.
+        ctl.open_browser();
+        ctl.on_browse_action(BrowseAction::SwitchTab(false));
+        assert!(!ctl.app.winamp_browse);
     }
 
     #[test]

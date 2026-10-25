@@ -628,12 +628,29 @@ impl Browser {
 
     /// Breadcrumb, e.g. `Radio › By country › Germany`.
     pub fn title(&self) -> String {
-        let mut title = short_name(self.kind).to_string();
-        for level in &self.stack {
-            title.push_str(" › ");
-            title.push_str(&level.title);
+        let mut title = String::new();
+        for (i, crumb) in self.crumbs().enumerate() {
+            if i > 0 {
+                title.push_str(" › ");
+            }
+            title.push_str(crumb);
         }
         title
+    }
+
+    /// The breadcrumb's parts: the provider, then each opened level.
+    pub fn crumbs(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(short_name(self.kind)).chain(self.stack.iter().map(|l| l.title.as_str()))
+    }
+
+    /// Whether the root menu is showing (nothing to go back to).
+    pub fn at_root(&self) -> bool {
+        self.stack.is_empty()
+    }
+
+    /// Rows a page key moves when another view draws the list.
+    pub fn set_viewport(&mut self, rows: usize) {
+        self.viewport = rows.max(1);
     }
 
     pub fn state(&self) -> &LevelState {
@@ -693,7 +710,8 @@ impl Browser {
         }
     }
 
-    fn select(&mut self, index: usize) {
+    /// Highlight row `index` (clamped) without opening it.
+    pub fn select(&mut self, index: usize) {
         let level = self.top_mut();
         level.selected = index.min(level.entries.len().saturating_sub(1));
     }

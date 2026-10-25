@@ -164,12 +164,15 @@ pub struct WinampUiState {
     /// Time display shows remaining time ("-m:ss").
     pub time_remaining: bool,
     pub focus: Window,
+    /// The playlist editor shows the provider browser, not the queue.
+    pub browsing: bool,
     pressed: Option<Element>,
     drag: Option<Drag>,
     seek_preview: Option<f32>,
     pl_scroll: usize,
     pl_visible: usize,
     last_selected: Option<usize>,
+    browse_scroll: usize,
     last_click: Option<(Instant, usize)>,
     vis: VisState,
     epoch: Instant,
@@ -195,12 +198,14 @@ impl WinampUiState {
             vis_mode: VisMode::Analyzer,
             time_remaining: false,
             focus: Window::Main,
+            browsing: false,
             pressed: None,
             drag: None,
             seek_preview: None,
             pl_scroll: 0,
             pl_visible: 0,
             last_selected: None,
+            browse_scroll: 0,
             last_click: None,
             vis: VisState::default(),
             epoch: Instant::now(),
@@ -335,6 +340,29 @@ impl WinampUiState {
         self.pl_scroll
     }
 
+    /// Keep the browser's highlighted row `selected` of `len` in `visible`
+    /// rows. Returns the first visible row.
+    pub fn sync_browse_scroll(&mut self, visible: usize, selected: usize, len: usize) -> usize {
+        let visible = visible.max(1);
+        if selected < self.browse_scroll {
+            self.browse_scroll = selected;
+        } else if selected >= self.browse_scroll + visible {
+            self.browse_scroll = selected + 1 - visible;
+        }
+        self.browse_scroll = self.browse_scroll.min(len.saturating_sub(visible));
+        self.browse_scroll
+    }
+
+    /// Re-point the playlist editor's list rows (the provider browser draws
+    /// over the queue): row `cells.y + r` is now row `first + r`.
+    pub fn set_list_region(&mut self, cells: Rect, first: usize) {
+        self.regions.retain(|r| !matches!(r, Region::Tracks { .. }));
+        if !cells.is_empty() {
+            // Ahead of the playlist window, which covers the same cells.
+            self.regions.insert(0, Region::Tracks { cells, first });
+        }
+    }
+
     fn scroll_frac(&self, len: usize) -> f32 {
         let max = len.saturating_sub(self.pl_visible);
         if max == 0 {
@@ -371,6 +399,55 @@ impl WinampUiState {
         self.on_mouse_at(ev, view, Instant::now())
     }
 
+    /// A left click on a row of the playlist editor's list of `len` rows:
+    /// `(row, double_click)`.
+    pub fn list_press(&mut self, ev: &MouseEvent, len: usize) -> Option<(usize, bool)> {
+        if ev.kind != MouseEventKind::Down(MouseButton::Left) {
+            return None;
+        }
+        self.list_click(ev.column, ev.row, len, Instant::now())
+    }
+
+    /// The mouse wheel over the playlist editor: `Some(true)` scrolls down.
+    pub fn list_wheel(&self, ev: &MouseEvent) -> Option<bool> {
+        let down = match ev.kind {
+            MouseEventKind::ScrollDown => true,
+            MouseEventKind::ScrollUp => false,
+            _ => return None,
+        };
+        matches!(
+            self.region_at(ev.column, ev.row)?,
+            Region::Tracks { .. }
+                | Region::Window(WindowGeom {
+                    window: Window::Playlist,
+                    ..
+                })
+        )
+        .then_some(down)
+    }
+
+    fn list_click(
+        &mut self,
+        col: u16,
+        row: u16,
+        len: usize,
+        now: Instant,
+    ) -> Option<(usize, bool)> {
+        let Some(Region::Tracks { cells, first }) = self.region_at(col, row) else {
+            return None;
+        };
+        self.focus = Window::Playlist;
+        let idx = first + usize::from(row - cells.y);
+        if idx >= len {
+            return None;
+        }
+        let double = self
+            .last_click
+            .is_some_and(|(t, i)| i == idx && now.duration_since(t) <= DOUBLE_CLICK);
+        self.last_click = if double { None } else { Some((now, idx)) };
+        Some((idx, double))
+    }
+
     fn on_mouse_at(&mut self, ev: MouseEvent, view: &PlayerView, now: Instant) -> Option<Command> {
         let (col, row) = (ev.column, ev.row);
         match ev.kind {
@@ -388,16 +465,8 @@ impl WinampUiState {
         self.drag = None;
         self.seek_preview = None;
         let (element, geom) = match self.region_at(col, row)? {
-            Region::Tracks { cells, first } => {
-                self.focus = Window::Playlist;
-                let idx = first + usize::from(row - cells.y);
-                if idx >= view.playlist.len() {
-                    return None;
-                }
-                let double = self
-                    .last_click
-                    .is_some_and(|(t, i)| i == idx && now.duration_since(t) <= DOUBLE_CLICK);
-                self.last_click = if double { None } else { Some((now, idx)) };
+            Region::Tracks { .. } => {
+                let (idx, double) = self.list_click(col, row, view.playlist.len(), now)?;
                 return Some(if double {
                     Command::PlayIndex(idx)
                 } else {
@@ -741,6 +810,60 @@ pub(crate) mod tests {
         });
         let down = mouse(MouseEventKind::Down(MouseButton::Left), 5, 13);
         assert_eq!(s.on_mouse_at(down, &view, t0), None);
+    }
+
+    #[test]
+    fn list_rows_can_be_repointed_at_the_provider_browser() {
+        let mut s = WinampUiState::new();
+        s.push_region(Region::Tracks {
+            cells: Rect::new(2, 4, 40, 6),
+            first: 0,
+        });
+        s.push_region(Region::Window(WindowGeom {
+            window: Window::Playlist,
+            cells: Rect::new(0, 0, 50, 20),
+            px_per_col: 1.0,
+            px_per_row: 2.0,
+            height_px: 40,
+        }));
+        // The browser's rows start one row lower (under its breadcrumb).
+        s.set_list_region(Rect::new(2, 5, 40, 5), 7);
+        let down = mouse(MouseEventKind::Down(MouseButton::Left), 3, 6);
+        let t0 = Instant::now();
+        assert_eq!(s.list_click(3, 6, 20, t0), Some((8, false)));
+        assert_eq!(
+            s.list_click(3, 6, 20, t0 + Duration::from_millis(100)),
+            Some((8, true))
+        );
+        assert_eq!(s.list_press(&down, 8), None, "past the end");
+        assert_eq!(s.list_click(3, 4, 20, t0), None, "the breadcrumb row");
+        assert_eq!(
+            s.list_wheel(&mouse(MouseEventKind::ScrollDown, 3, 6)),
+            Some(true)
+        );
+        assert_eq!(
+            s.list_wheel(&mouse(MouseEventKind::ScrollUp, 45, 1)),
+            Some(false),
+            "anywhere on the playlist window"
+        );
+        assert_eq!(s.list_wheel(&mouse(MouseEventKind::ScrollUp, 60, 1)), None);
+        // Only one list region remains.
+        s.set_list_region(Rect::default(), 0);
+        assert_eq!(s.list_click(3, 6, 20, t0), None);
+    }
+
+    #[test]
+    fn browse_scroll_keeps_the_highlight_visible() {
+        let mut s = WinampUiState::new();
+        assert_eq!(s.sync_browse_scroll(5, 0, 20), 0);
+        assert_eq!(s.sync_browse_scroll(5, 7, 20), 3);
+        assert_eq!(s.sync_browse_scroll(5, 5, 20), 3);
+        assert_eq!(s.sync_browse_scroll(5, 1, 20), 1);
+        assert_eq!(
+            s.sync_browse_scroll(5, 1, 3),
+            0,
+            "short lists start at the top"
+        );
     }
 
     #[test]

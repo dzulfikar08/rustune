@@ -488,3 +488,29 @@ jobs:
               fail("panic in daemon output")
           print("daemon smoke test passed")
           EOF
+
+  screenshots:
+    name: terminal screenshots (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev fonts-dejavu-core
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install pyte pillow
+      - name: Download the base-2.91 skin
+        run: |
+          curl -fsSL --retry 3 -o base-2.91.wsz \
+            https://r2.webampskins.org/skins/5e4f10275dcb1fb211d4a8b4f1bda236.wsz
+      - name: Capture the Winamp and Dark themes in a pseudo-terminal
+        run: python .github/scripts/screenshots.py target/release/rustune base-2.91.wsz screenshots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: terminal-screenshots
+          path: screenshots/*.png
+          if-no-files-found: error

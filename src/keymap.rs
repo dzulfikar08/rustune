@@ -28,7 +28,8 @@ impl Ctx {
     /// Radio, Podcasts, Subsonic and Jellyfin browsers.
     pub const PROVIDER: Self = Self(1 << 3);
     pub const PODCAST: Self = Self(1 << 4);
-    /// Playlist window (`P`).
+    /// Playlist window (`P`), or the skin's playlist editor in the Winamp
+    /// theme, which is the list there.
     pub const PLAYLIST: Self = Self(1 << 5);
     /// EQ panel (`e`); its keys shadow the others while it is open.
     pub const EQ: Self = Self(1 << 6);
@@ -40,6 +41,9 @@ impl Ctx {
     pub const SKINS: Self = Self(1 << 9);
     /// Skin browser showing the online museum.
     pub const SKINS_ONLINE: Self = Self(1 << 10);
+    /// Winamp playlist editor while the source is a menu-based provider
+    /// (Radio, Podcasts, Subsonic, Jellyfin) that it can browse.
+    pub const BROWSABLE: Self = Self(1 << 11);
     /// The browse-view lists (library, provider tabs, playlist window).
     const LISTS: Self = Self::LIBRARY.or(Self::PROVIDER).or(Self::PLAYLIST);
     /// Every list moved through with `j` / `k`, including the skin browser.
@@ -214,6 +218,8 @@ pub enum Action {
     MoveDown,
     MoveUp,
     Remove,
+    /// Winamp: show the provider's menus in the playlist editor.
+    BrowseSource,
     // EQ panel
     EqSlotPrev,
     EqSlotNext,
@@ -304,10 +310,10 @@ impl Section {
         match self {
             Self::Playback => "Playback",
             Self::General => "Panels, themes and general",
-            Self::Lists => "Lists (library, provider tabs, playlist window, skin browser)",
+            Self::Lists => "Lists (library, provider tabs, playlist, skin browser)",
             Self::Library => "Library (Local and Online tabs)",
             Self::Providers => "Provider tabs (Radio, Podcasts, Subsonic, Jellyfin)",
-            Self::Playlist => "Playlist window (P)",
+            Self::Playlist => "Playlist (the P window; in Winamp the skin's playlist editor)",
             Self::Equalizer => "EQ panel (e)",
             Self::Skins => "Skin browser (Settings → Theme Winamp → i or o)",
             Self::Prompt => "Prompt (search, : commands, save, open)",
@@ -724,6 +730,14 @@ pub static BINDINGS: &[Binding] = &[
         "Remove the track from the queue",
         "remove",
     ),
+    bind(
+        S::Playlist,
+        Ctx::BROWSABLE,
+        &[ch('B')],
+        A::BrowseSource,
+        "Winamp: browse Radio, Podcasts, Subsonic or Jellyfin in the playlist editor",
+        "browse",
+    ),
     // ── EQ panel ──
     bind(
         S::Equalizer,
@@ -1039,6 +1053,15 @@ pub fn hint_for(active: Ctx, action: Action) -> Option<(&'static str, &'static s
         .map(|(b, label)| (label.as_str(), b.hint))
 }
 
+/// The first key of `action` in `active` (`?` for the palette), for hints
+/// that show one key per action.
+pub fn first_key(active: Ctx, action: Action) -> Option<Key> {
+    BINDINGS
+        .iter()
+        .find(|b| b.action == action && b.ctx.intersects(active))
+        .and_then(|b| b.keys.first().copied())
+}
+
 /// The key reference for `--help`.
 pub fn write_help(out: &mut String) {
     for section in Section::ALL {
@@ -1101,6 +1124,7 @@ mod tests {
             Ctx::PROVIDER,
             Ctx::PROVIDER.or(Ctx::PODCAST),
             Ctx::PLAYLIST,
+            Ctx::PLAYLIST.or(Ctx::BROWSABLE),
         ];
         let mut out = vec![
             Ctx::PROMPT,
