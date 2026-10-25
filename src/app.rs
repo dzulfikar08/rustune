@@ -252,6 +252,11 @@ pub struct App {
     pub deps: Deps,
     /// Command palette overlay (`?` / Ctrl+K), when open.
     pub palette: Option<Palette>,
+    /// The most recent error message (kept after the status line moves on).
+    pub last_error: Option<String>,
+    /// In-flight extractor lookup (yt-dlp) for the current track. Aborting
+    /// drops the future, and `kill_on_drop` kills the child process.
+    pub resolving: Option<tokio::task::AbortHandle>,
 }
 
 /// "Artist - Title" when the artist is known.
@@ -337,6 +342,8 @@ impl App {
             analyzer_winamp,
             deps: Deps::default(),
             palette: None,
+            last_error: None,
+            resolving: None,
         }
     }
 
@@ -415,6 +422,9 @@ impl App {
 
     pub fn set_status(&mut self, status: Status) {
         self.status_expires = matches!(status, Status::Info(_)).then(|| Instant::now() + INFO_TTL);
+        if let Status::Error(msg) = &status {
+            self.last_error = Some(msg.clone());
+        }
         self.status = status;
     }
 

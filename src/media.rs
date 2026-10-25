@@ -1,7 +1,8 @@
 /// Generic media item shared by every source (local files, yt-dlp, providers).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MediaItem {
-    /// Local: absolute file path. Extractor: native ID (e.g. YouTube video ID).
+    /// Local: absolute file path. Extractor: the page URL (or a bare YouTube
+    /// video ID from search results and older sessions).
     /// Url: a directly playable http(s) URL.
     pub id: String,
     pub title: String,
@@ -29,4 +30,6 @@ pub struct StreamInfo {
     /// `file://` path for local, stream URL for extractor.
     pub url: String,
     pub title: String,
+    /// The page's own title, when the extractor reported one.
+    pub page_title: Option<String>,
 }

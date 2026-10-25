@@ -5,11 +5,18 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
-use super::protocol::{check_reply, Request, Status};
+use serde_json::Value;
+
+use super::keys::{parse_key, text_keys};
+use super::protocol::{
+    check_reply, HitKind, LyricsReply, Query, QueueReply, Request, Screen, Search, SearchReply,
+    SearchSource, Status, Then,
+};
 use super::transport::{self, Conn};
 use crate::command::Command;
 use crate::eq_presets;
 use crate::view::{PlayStatus, RepeatMode};
+use crate::vis::VisMode;
 
 /// What a remote subcommand asks the running instance to do.
 #[derive(Debug, Clone, PartialEq)]
@@ -24,13 +31,133 @@ pub enum Remote {
         json: bool,
     },
     Watch,
+    List {
+        json: bool,
+    },
+    /// Queue positions are 1-based here and checked against the queue.
+    Jump(usize),
+    Remove(usize),
+    Move {
+        from: usize,
+        to: usize,
+    },
+    Search {
+        search: Search,
+        json: bool,
+    },
+    VisList,
+    /// Installed skin name, museum md5 or `.wsz` path.
+    Skin(String),
+    Lyrics {
+        json: bool,
+    },
+    Keys(Vec<String>),
+    Screen {
+        ansi: bool,
+        json: bool,
+    },
+    /// A raw protocol line (`rustune send`).
+    Raw(String),
 }
 
 /// Subcommand names `cli::parse` routes here.
 pub const SUBCOMMANDS: &[&str] = &[
     "play", "pause", "toggle", "stop", "next", "prev", "status", "volume", "seek", "shuffle",
-    "repeat", "eq", "queue", "watch", "quit",
+    "repeat", "eq", "queue", "watch", "quit", "list", "jump", "remove", "move", "clear", "search",
+    "theme", "vis", "skin", "lyrics", "key", "screen", "send",
 ];
+
+/// The flags in `args`, each one of `allowed`.
+fn flags<'a>(name: &str, args: &'a [String], allowed: &[&str]) -> Result<Vec<&'a str>, String> {
+    args.iter()
+        .map(|a| {
+            if allowed.contains(&a.as_str()) {
+                Ok(a.as_str())
+            } else {
+                Err(format!(
+                    "unexpected argument after '{name}': {a} (allowed: {})",
+                    allowed.join(" ")
+                ))
+            }
+        })
+        .collect()
+}
+
+/// A 1-based position (queue index, search result, limit).
+fn position(what: &str, arg: &str) -> Result<usize, String> {
+    arg.parse::<usize>()
+        .ok()
+        .filter(|n| *n >= 1)
+        .ok_or_else(|| format!("bad {what} '{arg}' (use 1, 2, 3, ...)"))
+}
+
+fn source_names() -> String {
+    SearchSource::ALL.map(SearchSource::name).join(", ")
+}
+
+/// `search SOURCE QUERY... [--limit N] [--json] [--queue | --play N]`.
+fn parse_search(args: &[String]) -> Result<Remote, String> {
+    let mut args = args.iter();
+    let source = args
+        .next()
+        .ok_or_else(|| format!("'search' needs a source ({}) and a query", source_names()))?;
+    let source = SearchSource::from_name(source)
+        .ok_or_else(|| format!("unknown source '{source}' ({})", source_names()))?;
+    let (mut words, mut limit, mut json, mut then) = (Vec::new(), None, false, None);
+    let value = |flag: &str, next: Option<&String>| {
+        next.ok_or_else(|| format!("'{flag}' needs a number"))
+            .and_then(|n| position(flag.trim_start_matches('-'), n))
+    };
+    let set_then = |then: &mut Option<Then>, t: Then| match then.replace(t) {
+        Some(_) => Err("use only one of --queue and --play".to_string()),
+        None => Ok(()),
+    };
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--limit" => limit = Some(value("--limit", args.next())?),
+            "--json" => json = true,
+            "--queue" => set_then(&mut then, Then::Queue)?,
+            "--play" => set_then(&mut then, Then::Play(value("--play", args.next())?))?,
+            flag if flag.starts_with("--") => {
+                return Err(format!(
+                    "unknown option for 'search': {flag} (--limit N, --json, --queue, --play N)"
+                ))
+            }
+            word => words.push(word),
+        }
+    }
+    if words.is_empty() {
+        return Err("'search' needs a query".into());
+    }
+    Ok(Remote::Search {
+        search: Search {
+            source,
+            query: words.join(" "),
+            limit,
+            then: then.unwrap_or_default(),
+        },
+        json,
+    })
+}
+
+/// `key SPEC... [--text WORDS]...`, checked here for a clear error.
+fn parse_keys(args: &[String]) -> Result<Remote, String> {
+    let mut keys = Vec::new();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--text" {
+            let text = args.next().ok_or("'--text' needs the text to type")?;
+            keys.extend(text_keys(text));
+        } else {
+            parse_key(arg)?;
+            keys.push(arg.clone());
+        }
+    }
+    if keys.is_empty() {
+        return Err("'key' needs keys (e.g. j, Enter, ctrl+k) or --text WORDS".into());
+    }
+    Ok(Remote::Keys(keys))
+}
 
 /// Parse `rustune <name> <args>...` for a name in [`SUBCOMMANDS`].
 pub fn parse(name: &str, args: &[String]) -> Result<Remote, String> {
@@ -69,6 +196,52 @@ pub fn parse(name: &str, args: &[String]) -> Result<Remote, String> {
         "eq" => parse_eq(&args.join(" ")),
         "queue" if args.is_empty() => Err("'queue' needs files, directories or URLs".into()),
         "queue" => Ok(Remote::Send(Command::Enqueue(args.to_vec()))),
+        "list" => Ok(Remote::List {
+            json: !flags(name, args, &["--json"])?.is_empty(),
+        }),
+        "jump" => position("position", one_arg()?).map(Remote::Jump),
+        "remove" => position("position", one_arg()?).map(Remote::Remove),
+        "move" => match args {
+            [from, to] => Ok(Remote::Move {
+                from: position("position", from)?,
+                to: position("position", to)?,
+            }),
+            _ => Err("'move' needs two positions: FROM TO".into()),
+        },
+        "clear" => send(Command::ClearQueue),
+        "search" => parse_search(args),
+        "theme" => match one_arg()?.to_ascii_lowercase().as_str() {
+            "dark" => Ok(Remote::Send(Command::SetTheme("Dark".into()))),
+            "light" => Ok(Remote::Send(Command::SetTheme("Light".into()))),
+            "winamp" => Ok(Remote::Send(Command::SetTheme("Winamp".into()))),
+            other => Err(format!("unknown theme '{other}' (dark, light, winamp)")),
+        },
+        "vis" => match one_arg()? {
+            "next" => Ok(Remote::Send(Command::CycleVis)),
+            "list" => Ok(Remote::VisList),
+            mode => VisMode::from_name(mode)
+                .map(|m| Remote::Send(Command::SetVis(m)))
+                .ok_or_else(|| {
+                    let names: Vec<&str> = VisMode::list().iter().map(|m| m.name()).collect();
+                    format!(
+                        "unknown visualizer '{mode}' (next, list, {})",
+                        names.join(", ")
+                    )
+                }),
+        },
+        "skin" => Ok(Remote::Skin(one_arg()?.to_string())),
+        "lyrics" => Ok(Remote::Lyrics {
+            json: !flags(name, args, &["--json"])?.is_empty(),
+        }),
+        "key" => parse_keys(args),
+        "screen" => {
+            let set = flags(name, args, &["--ansi", "--json"])?;
+            Ok(Remote::Screen {
+                ansi: set.contains(&"--ansi"),
+                json: set.contains(&"--json"),
+            })
+        }
+        "send" => Ok(Remote::Raw(one_arg()?.to_string())),
         _ => Err(format!("unknown command: {name}")),
     }
 }
@@ -212,9 +385,50 @@ impl Client {
 
     fn status(&mut self) -> Result<Status, Failure> {
         let value = self.request(&Request::Status)?;
-        serde_json::from_value(value)
-            .map_err(|e| Failure::Failed(format!("bad status from rustune: {e}")))
+        decode(value, "status")
     }
+
+    fn query<T: serde::de::DeserializeOwned>(&mut self, query: Query) -> Result<T, Failure> {
+        let value = self.request(&Request::Query(query))?;
+        decode(value, "reply")
+    }
+
+    fn queue(&mut self) -> Result<QueueReply, Failure> {
+        self.query(Query::Queue)
+    }
+
+    /// Send `line` as is; returns the raw reply line.
+    fn raw(&mut self, line: &str) -> Result<String, Failure> {
+        let conn = self.conn.get_mut();
+        conn.write_all(line.trim().as_bytes())?;
+        conn.write_all(b"\n")?;
+        conn.flush()?;
+        let reply = self
+            .read()?
+            .ok_or_else(|| "rustune closed the connection".to_string())?;
+        Ok(reply.to_string())
+    }
+}
+
+fn decode<T: serde::de::DeserializeOwned>(value: Value, what: &str) -> Result<T, Failure> {
+    serde_json::from_value(value)
+        .map_err(|e| Failure::Failed(format!("bad {what} from rustune: {e}")))
+}
+
+/// The queue entry at 1-based `n`, or a clear error.
+fn entry_title(queue: &QueueReply, n: usize) -> Result<String, Failure> {
+    match queue.items.get(n - 1) {
+        Some(entry) => Ok(entry.title.clone()),
+        None if queue.items.is_empty() => Err(Failure::Failed("the queue is empty".into())),
+        None => Err(Failure::Failed(format!(
+            "no item {n} in the queue (1-{})",
+            queue.items.len()
+        ))),
+    }
+}
+
+fn print_json(value: &Value) {
+    println!("{}", serde_json::to_string(value).unwrap_or_default());
 }
 
 fn execute(endpoint: &Path, remote: Remote) -> Result<(), Failure> {
@@ -249,6 +463,87 @@ fn execute(endpoint: &Path, remote: Remote) -> Result<(), Failure> {
                     break;
                 }
             }
+        }
+        Remote::List { json: true } => {
+            print_json(&client.request(&Request::Query(Query::Queue))?);
+        }
+        Remote::List { json: false } => print!("{}", format_queue(&client.queue()?)),
+        Remote::Jump(n) => {
+            let title = entry_title(&client.queue()?, n)?;
+            client.command(Command::PlayIndex(n - 1))?;
+            println!("Playing {n}. {title}");
+        }
+        Remote::Remove(n) => {
+            let title = entry_title(&client.queue()?, n)?;
+            client.command(Command::RemoveFromQueue(n - 1))?;
+            println!("Removed {n}. {title}");
+        }
+        Remote::Move { from, to } => {
+            let queue = client.queue()?;
+            let title = entry_title(&queue, from)?;
+            entry_title(&queue, to)?;
+            client.command(Command::MoveInQueue {
+                from: from - 1,
+                to: to - 1,
+            })?;
+            println!("Moved {title} to {to}");
+        }
+        Remote::Search { search, json } => {
+            let value = client.request(&Request::Query(Query::Search(search)))?;
+            if json {
+                print_json(&value);
+            } else {
+                print!("{}", format_search(&decode(value, "search reply")?));
+            }
+        }
+        Remote::VisList => {
+            let current = client.status()?.vis;
+            for mode in VisMode::list() {
+                let mark = if mode.name() == current { '*' } else { ' ' };
+                println!("{mark} {}", mode.name());
+            }
+        }
+        Remote::Skin(spec) => {
+            // A local file: the running instance needs its absolute path.
+            let spec = if Path::new(&spec).is_file() {
+                absolutize(std::slice::from_ref(&spec)).remove(0)
+            } else {
+                spec
+            };
+            let value = client.request(&Request::Query(Query::Skin(spec)))?;
+            println!(
+                "Skin: {} ({})",
+                value["skin"].as_str().unwrap_or("?"),
+                value["path"].as_str().unwrap_or("?")
+            );
+        }
+        Remote::Lyrics { json: true } => {
+            print_json(&client.request(&Request::Query(Query::Lyrics))?);
+        }
+        Remote::Lyrics { json: false } => {
+            print!("{}", format_lyrics(&client.query(Query::Lyrics)?));
+        }
+        Remote::Keys(keys) => {
+            client.request(&Request::Query(Query::Keys(keys)))?;
+        }
+        Remote::Screen { ansi, json } => {
+            let mut value = client.request(&Request::Query(Query::Screen))?;
+            if json {
+                if !ansi {
+                    if let Some(map) = value.as_object_mut() {
+                        map.remove("ansi");
+                    }
+                }
+                print_json(&value);
+            } else {
+                let screen: Screen = decode(value, "screen")?;
+                print!("{}", if ansi { &screen.ansi } else { &screen.text });
+            }
+        }
+        Remote::Raw(line) => {
+            let reply = client.raw(&line)?;
+            println!("{reply}");
+            check_reply(&reply)?;
         }
     }
     Ok(())
@@ -336,6 +631,113 @@ pub fn format_status(s: &Status) -> String {
         .queue_index
         .map_or_else(|| "-".to_string(), |i| (i + 1).to_string());
     out.push_str(&format!("Queue:   {position}/{}\n", s.queue_length));
+    if !s.source.is_empty() {
+        out.push_str(&format!(
+            "View:    {}  source {}  theme {}  vis {}\n",
+            s.view, s.source, s.theme, s.vis
+        ));
+    }
+    if s.resolving {
+        out.push_str("Loading: looking up the stream with yt-dlp\n");
+    }
+    if let Some(error) = &s.last_error {
+        out.push_str(&format!("Error:   {error}\n"));
+    }
+    out
+}
+
+fn duration_suffix(duration: Option<u64>) -> String {
+    duration.map_or_else(String::new, |d| format!("  [{}]", clock(d)))
+}
+
+/// `rustune list`: `>` marks the current track, `*` the cursor.
+pub fn format_queue(queue: &QueueReply) -> String {
+    if queue.items.is_empty() {
+        return "(the queue is empty)\n".to_string();
+    }
+    let mut out = String::new();
+    for e in &queue.items {
+        let artist = e
+            .artist
+            .as_deref()
+            .map_or_else(String::new, |a| format!(" - {a}"));
+        out.push_str(&format!(
+            "{}{}{:>3}. {}{artist}{}  ({})\n",
+            if e.current { '>' } else { ' ' },
+            if e.cursor { '*' } else { ' ' },
+            e.index,
+            e.title,
+            duration_suffix(e.duration),
+            e.source,
+        ));
+    }
+    out.push_str("(> playing, * cursor)\n");
+    out
+}
+
+/// `rustune search`: numbered results, then what was done with them.
+pub fn format_search(reply: &SearchReply) -> String {
+    let mut out = String::new();
+    if let Some(opened) = &reply.opened {
+        out.push_str(&format!("Opened: {opened}\n"));
+    }
+    if reply.results.is_empty() {
+        out.push_str(&format!(
+            "No results for '{}' in {}\n",
+            reply.query,
+            reply.source.name()
+        ));
+    }
+    for hit in &reply.results {
+        let artist = hit
+            .artist
+            .as_deref()
+            .map_or_else(String::new, |a| format!(" - {a}"));
+        let kind = match hit.kind {
+            HitKind::Track => "",
+            HitKind::Show => "  [show]",
+            HitKind::Folder => "  [folder]",
+        };
+        let subtitle = hit
+            .subtitle
+            .as_deref()
+            .map_or_else(String::new, |s| format!("  ({s})"));
+        out.push_str(&format!(
+            "{:>3}. {}{artist}{}{kind}{subtitle}\n",
+            hit.index,
+            hit.title,
+            duration_suffix(hit.duration),
+        ));
+    }
+    if let Some(n) = reply.queued {
+        out.push_str(&format!("Queued {n} track(s)\n"));
+    }
+    if let Some(playing) = &reply.playing {
+        out.push_str(&format!("Playing: {playing}\n"));
+    }
+    out
+}
+
+/// `rustune lyrics`: timed lines as `[m:ss] text`, else the plain text.
+pub fn format_lyrics(reply: &LyricsReply) -> String {
+    if !reply.found {
+        let why = reply.message.as_deref().unwrap_or("none");
+        return format!("No lyrics: {why}\n");
+    }
+    let mut out = format!("Lyrics: {}\n", reply.title);
+    if reply.instrumental {
+        out.push_str("(instrumental)\n");
+    }
+    if reply.synced.is_empty() {
+        if let Some(plain) = &reply.plain {
+            out.push_str(plain.trim_end());
+            out.push('\n');
+        }
+    } else {
+        for line in &reply.synced {
+            out.push_str(&format!("[{}] {}\n", clock(line.time as u64), line.text));
+        }
+    }
     out
 }
 
@@ -471,6 +873,169 @@ mod tests {
         let empty = format_status(&Status::default());
         assert!(empty.starts_with("Stopped: (nothing queued)"), "{empty}");
         assert!(empty.contains("--:--"));
+    }
+
+    #[test]
+    fn queue_editing_arguments() {
+        assert_eq!(ok("list", &[]), Remote::List { json: false });
+        assert_eq!(ok("list", &["--json"]), Remote::List { json: true });
+        assert!(parse("list", &args(&["--yaml"])).is_err());
+        assert_eq!(ok("jump", &["2"]), Remote::Jump(2));
+        assert_eq!(ok("remove", &["1"]), Remote::Remove(1));
+        assert_eq!(ok("move", &["1", "3"]), Remote::Move { from: 1, to: 3 });
+        assert_eq!(ok("clear", &[]), Remote::Send(Command::ClearQueue));
+        for bad in [
+            ("jump", vec!["0"]),
+            ("remove", vec!["x"]),
+            ("move", vec!["1"]),
+        ] {
+            assert!(parse(bad.0, &args(&bad.1)).is_err(), "{bad:?}");
+        }
+        assert!(parse("jump", &args(&["0"]))
+            .unwrap_err()
+            .contains("1, 2, 3"));
+    }
+
+    #[test]
+    fn search_arguments() {
+        let search = |list: &[&str]| match ok("search", list) {
+            Remote::Search { search, json } => (search, json),
+            other => panic!("{other:?}"),
+        };
+        let (s, json) = search(&["local", "daft", "punk"]);
+        assert_eq!(s.source, SearchSource::Local);
+        assert_eq!(
+            (s.query.as_str(), s.limit, s.then, json),
+            ("daft punk", None, Then::Show, false)
+        );
+        let (s, json) = search(&["online", "lofi", "--limit", "5", "--json", "--play", "2"]);
+        assert_eq!(
+            (s.source, s.limit, s.then, json),
+            (SearchSource::Online, Some(5), Then::Play(2), true)
+        );
+        let (s, _) = search(&["Podcasts", "--queue", "rust"]);
+        assert_eq!((s.source, s.then), (SearchSource::Podcasts, Then::Queue));
+        let err = |list: &[&str]| parse("search", &args(list)).unwrap_err();
+        assert!(err(&[]).contains("needs a source"));
+        assert!(err(&["mars", "x"]).contains("unknown source"));
+        assert!(err(&["local"]).contains("needs a query"));
+        assert!(err(&["local", "x", "--queue", "--play", "1"]).contains("only one"));
+        assert!(err(&["local", "x", "--play", "0"]).contains("bad play"));
+        assert!(err(&["local", "x", "--limit"]).contains("needs a number"));
+        assert!(err(&["local", "x", "--loud"]).contains("unknown option"));
+    }
+
+    #[test]
+    fn look_and_tui_arguments() {
+        assert_eq!(
+            ok("theme", &["Winamp"]),
+            Remote::Send(Command::SetTheme("Winamp".into()))
+        );
+        assert!(parse("theme", &args(&["neon"])).is_err());
+        assert_eq!(ok("vis", &["next"]), Remote::Send(Command::CycleVis));
+        assert_eq!(ok("vis", &["list"]), Remote::VisList);
+        assert_eq!(
+            ok("vis", &["scope"]),
+            Remote::Send(Command::SetVis(VisMode::Scope))
+        );
+        assert!(parse("vis", &args(&["lava"]))
+            .unwrap_err()
+            .contains("spectrogram"));
+        assert_eq!(ok("skin", &["base-2.91"]), Remote::Skin("base-2.91".into()));
+        assert_eq!(ok("lyrics", &["--json"]), Remote::Lyrics { json: true });
+        assert_eq!(
+            ok("screen", &["--ansi", "--json"]),
+            Remote::Screen {
+                ansi: true,
+                json: true
+            }
+        );
+        assert_eq!(
+            ok("send", &[r#"{"get":"queue"}"#]),
+            Remote::Raw(r#"{"get":"queue"}"#.into())
+        );
+        assert_eq!(
+            ok("key", &["j", "ctrl+k", "--text", "a b", "Enter"]),
+            Remote::Keys(args(&["j", "ctrl+k", "a", "Space", "b", "Enter"]))
+        );
+        assert!(parse("key", &args(&[])).is_err());
+        assert!(parse("key", &args(&["Enterr"]))
+            .unwrap_err()
+            .contains("bad key"));
+        assert!(parse("key", &args(&["--text"])).is_err());
+    }
+
+    #[test]
+    fn listings_are_readable() {
+        use crate::ipc::protocol::{Hit, LyricLine, QueueEntry};
+        let entry = |index: usize, current: bool, cursor: bool| QueueEntry {
+            index,
+            title: format!("Song {index}"),
+            artist: (index == 1).then(|| "Band".to_string()),
+            album: None,
+            duration: Some(75),
+            source: "local".into(),
+            id: format!("/m/{index}.flac"),
+            current,
+            cursor,
+        };
+        let queue = QueueReply {
+            items: vec![entry(1, true, false), entry(2, false, true)],
+        };
+        let text = format_queue(&queue);
+        assert!(
+            text.contains(">   1. Song 1 - Band  [1:15]  (local)"),
+            "{text}"
+        );
+        assert!(text.contains(" *  2. Song 2"), "{text}");
+        assert_eq!(
+            format_queue(&QueueReply::default()),
+            "(the queue is empty)\n"
+        );
+
+        let mut hit = Hit::track(
+            1,
+            &crate::media::MediaItem {
+                id: "abc".into(),
+                title: "Video".into(),
+                artist: None,
+                album: None,
+                duration: Some(61),
+                subtitle: Some("Channel".into()),
+                source: crate::media::SourceKind::Extractor("ytdlp".into()),
+            },
+        );
+        let reply = SearchReply {
+            source: SearchSource::Online,
+            query: "v".into(),
+            results: vec![hit.clone()],
+            queued: None,
+            opened: None,
+            playing: Some("Video".into()),
+        };
+        let text = format_search(&reply);
+        assert!(text.contains("  1. Video  [1:01]  (Channel)\n"), "{text}");
+        assert!(text.ends_with("Playing: Video\n"));
+        hit.kind = HitKind::Show;
+        let shows = SearchReply {
+            results: vec![hit],
+            playing: None,
+            ..reply
+        };
+        assert!(format_search(&shows).contains("[show]"));
+
+        let lyrics = LyricsReply {
+            found: true,
+            title: "Song".into(),
+            synced: vec![LyricLine {
+                time: 62.5,
+                text: "Hello".into(),
+            }],
+            ..LyricsReply::default()
+        };
+        assert_eq!(format_lyrics(&lyrics), "Lyrics: Song\n[1:02] Hello\n");
+        let none = LyricsReply::none("Song", "no lyrics found");
+        assert_eq!(format_lyrics(&none), "No lyrics: no lyrics found\n");
     }
 
     #[cfg(unix)]

@@ -22,7 +22,7 @@ use crate::app::{
     OnboardingAction, PlaybackState, SettingsAction, Status, Tab,
 };
 use crate::audio::{EngineEvent, Source, TrackInfo};
-use crate::browse::{self, BrowseOutcome, Browser, Services};
+use crate::browse::{self, BrowseOutcome, Browser, Entry, Services};
 use crate::command::Command;
 use crate::config::{self, Config};
 use crate::eq_presets;
@@ -30,6 +30,12 @@ use crate::event::AppEvent;
 use crate::extractor::{self, ExtractorRegistry, YtdlpExtractor};
 use crate::gfx::{GfxPainter, Protocol};
 use crate::install::{self, Dep, DepStatus};
+use crate::ipc::keys::parse_key;
+use crate::ipc::protocol::{
+    error_line, reply_line, Hit, LyricsReply, Query, QueueReply, Reply, Search, SearchReply,
+    SearchSource, Then, OK,
+};
+use crate::ipc::screen::{self, Caret};
 use crate::keymap::{self, Action, Ctx};
 use crate::library;
 use crate::media::{MediaItem, SourceKind};
@@ -93,10 +99,9 @@ pub struct Controller {
     lyrics_cache: HashMap<String, Option<Lyrics>>,
     lyrics_key: Option<String>,
     search_token: u64,
-    /// In-flight extractor resolution (yt-dlp). Aborting drops the future,
-    /// and `kill_on_drop` kills the child process.
-    resolving: Option<tokio::task::AbortHandle>,
     skin_fetch_token: u64,
+    /// A library scan is running.
+    scanning: bool,
     save_at: Option<Instant>,
     saving: bool,
     pub winamp_ui: WinampUiState,
@@ -111,6 +116,92 @@ pub struct Controller {
     /// Notified with the app state after every change (IPC status, OS media
     /// controls). Each observer diffs cheaply against what it last saw.
     pub observers: Vec<Observer>,
+    /// A terminal UI is attached (keys and screen captures work).
+    pub tui: bool,
+    /// IPC clients waiting for the next drawn frame.
+    screen_requests: Vec<Reply>,
+    /// IPC clients waiting for the current track's lyrics.
+    lyrics_waiters: Vec<Reply>,
+    /// IPC local searches waiting for the library scan.
+    pending_local: Vec<(Search, Reply)>,
+}
+
+fn answer(reply: Reply, line: String) {
+    // The client may have given up already; nothing to do then.
+    let _ = reply.send(line);
+}
+
+/// Playable results (songs, videos, stations, episodes) as queue items.
+fn playable(entries: &[Entry]) -> Vec<MediaItem> {
+    entries
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Track { item, .. } => Some(item.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn as_entries(items: Vec<MediaItem>) -> Vec<Entry> {
+    items
+        .into_iter()
+        .map(|item| Entry::Track {
+            item,
+            radio_uuid: None,
+        })
+        .collect()
+}
+
+/// Find the skin `spec` names (installed name, `.wsz` path or Winamp Skin
+/// Museum md5), installing it into the skins directory when needed.
+fn install_skin(spec: &str) -> Result<PathBuf> {
+    install_skin_in(&config::skins_dir(), spec)
+}
+
+fn install_skin_in(dir: &Path, spec: &str) -> Result<PathBuf> {
+    let path = Path::new(spec);
+    if path.is_file() {
+        let name = path
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("Invalid skin file name"))?;
+        let dest = dir.join(name);
+        if path.parent() != Some(dir) {
+            std::fs::create_dir_all(dir)?;
+            std::fs::copy(path, &dest)
+                .map_err(|e| anyhow::anyhow!("Copying {spec} to {}: {e}", dest.display()))?;
+        }
+        return Ok(dest);
+    }
+    if net::is_skin_md5(spec) {
+        let md5 = spec.to_ascii_lowercase();
+        // Already installed under any name (e.g. the base skin): no download.
+        if let Some(found) = net::installed_skin_with_md5(dir, &md5) {
+            return Ok(found);
+        }
+        let museum_name = net::fetch_skin_filename(&md5)?;
+        let filename = net::unused_skin_filename(dir, &museum_name, &md5);
+        return PreviewCache::user().install(&md5, &filename, dir, net::fetch_skin_bytes);
+    }
+    let installed = net::list_skins(dir);
+    let wanted = spec.strip_suffix(".wsz").unwrap_or(spec);
+    if let Some(found) = installed.iter().find(|p| {
+        p.file_stem()
+            .is_some_and(|stem| stem.to_string_lossy().eq_ignore_ascii_case(wanted))
+    }) {
+        return Ok(found.clone());
+    }
+    let names: Vec<String> = installed
+        .iter()
+        .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .collect();
+    anyhow::bail!(
+        "No skin '{spec}': give a .wsz file, a Winamp Skin Museum md5 or an installed skin ({})",
+        if names.is_empty() {
+            "none installed".to_string()
+        } else {
+            names.join(", ")
+        }
+    )
 }
 
 /// Parse a `:command` typed into the prompt into a player `Command`.
@@ -281,7 +372,7 @@ impl Controller {
             lyrics_key: None,
             search_token: 0,
             skin_fetch_token: 0,
-            resolving: None,
+            scanning: false,
             save_at: None,
             saving: false,
             winamp_ui: WinampUiState::new(),
@@ -291,6 +382,10 @@ impl Controller {
             vis_at: Instant::now(),
             screen_height: 0,
             observers: Vec::new(),
+            tui: false,
+            screen_requests: Vec::new(),
+            lyrics_waiters: Vec::new(),
+            pending_local: Vec::new(),
         }
     }
 
@@ -339,6 +434,7 @@ impl Controller {
     // ── background helpers ───────────────────────────────────────────────
 
     fn start_scan(&mut self) {
+        self.scanning = true;
         self.app
             .set_status(Status::Scanning("Scanning music directory…".into()));
         let root = self.app.config.music_dir.clone();
@@ -637,6 +733,12 @@ impl Controller {
     /// Show (from cache) or fetch the lyrics of the playing track. Fetches
     /// only while the panel is open.
     fn request_lyrics(&mut self) {
+        self.fetch_lyrics(false);
+    }
+
+    /// [`request_lyrics`](Self::request_lyrics); `force` fetches with the
+    /// panel closed too (an IPC client asked).
+    fn fetch_lyrics(&mut self, force: bool) {
         if !self.app.config.providers.lyrics.enabled {
             return;
         }
@@ -663,7 +765,7 @@ impl Controller {
             self.lyrics_key = Some(key);
             return;
         }
-        if !self.app.show_lyrics {
+        if !self.app.show_lyrics && !force {
             self.app.lyrics = LyricsStatus::Idle;
             self.lyrics_key = None;
             return;
@@ -684,6 +786,58 @@ impl Controller {
                 .map_err(|e| e.to_string());
             let _ = tx.send(AppEvent::LyricsReady { key, result });
         });
+    }
+
+    /// `rustune lyrics`: answer now, or once the lookup finishes.
+    fn query_lyrics(&mut self, reply: Reply) {
+        if !self.app.config.providers.lyrics.enabled {
+            let none = LyricsReply::none(
+                self.now_playing(),
+                "lyrics are disabled ([providers.lyrics] enabled = false)",
+            );
+            answer(reply, reply_line(&none));
+            return;
+        }
+        self.fetch_lyrics(true);
+        if matches!(self.app.lyrics, LyricsStatus::Loading) {
+            self.lyrics_waiters.push(reply);
+        } else {
+            answer(reply, self.lyrics_line());
+        }
+    }
+
+    fn now_playing(&self) -> &str {
+        self.app
+            .playback
+            .as_ref()
+            .map_or("", |pb| pb.title.as_str())
+    }
+
+    fn lyrics_line(&self) -> String {
+        let title = self.now_playing();
+        let reply = match &self.app.lyrics {
+            _ if self.app.playback.is_none() => LyricsReply::none(title, "nothing is playing"),
+            LyricsStatus::Ready(lyrics) => LyricsReply::found(title, lyrics),
+            LyricsStatus::NotFound => LyricsReply::none(title, "no lyrics found"),
+            LyricsStatus::Error(e) => {
+                LyricsReply::none(title, format!("lyrics lookup failed: {e}"))
+            }
+            LyricsStatus::Idle | LyricsStatus::Loading => {
+                LyricsReply::none(title, "lyrics are not loaded yet")
+            }
+        };
+        reply_line(&reply)
+    }
+
+    /// The lookup for the current track finished: answer waiting clients.
+    fn answer_lyrics_waiters(&mut self) {
+        if self.lyrics_waiters.is_empty() {
+            return;
+        }
+        let line = self.lyrics_line();
+        for reply in self.lyrics_waiters.drain(..) {
+            answer(reply, line.clone());
+        }
     }
 
     // ── playback ─────────────────────────────────────────────────────────
@@ -732,12 +886,12 @@ impl Controller {
             let result = ext.resolve(&id, &title).await;
             let _ = tx.send(AppEvent::StreamReady { token, result });
         });
-        self.resolving = Some(task.abort_handle());
+        self.app.resolving = Some(task.abort_handle());
     }
 
     /// Kill a yt-dlp lookup for a track the user already left.
     fn cancel_resolve(&mut self) {
-        if let Some(task) = self.resolving.take() {
+        if let Some(task) = self.app.resolving.take() {
             task.abort();
         }
     }
@@ -1132,6 +1286,308 @@ impl Controller {
                 }
             },
             Command::Enqueue(inputs) => self.resolve_into_queue(inputs, true),
+            Command::SetVis(mode) => {
+                self.app.vis_mode = mode;
+                self.app.info(format!("Visualizer: {mode}"));
+                self.mark_dirty();
+            }
+            Command::RemoveFromQueue(i) => {
+                self.on_browse_action(BrowseAction::RemoveFromQueue(i));
+            }
+            Command::MoveInQueue { from, to } => {
+                if from < self.app.queue.len() && to < self.app.queue.len() {
+                    self.on_browse_action(BrowseAction::MoveInQueue { from, to });
+                }
+            }
+            Command::ClearQueue => self.clear_queue(),
+        }
+    }
+
+    /// Append `items` to the queue; an empty queue starts playing them.
+    fn append_to_queue(&mut self, items: Vec<MediaItem>) {
+        if items.is_empty() {
+            return;
+        }
+        if self.app.queue.is_empty() {
+            self.resume = None;
+            self.app.queue.replace(items, Some(0));
+            self.play_current();
+        } else {
+            let n = items.len();
+            for item in items {
+                self.app.queue.enqueue(item);
+            }
+            self.app.info(format!("Queued {n} item(s)"));
+        }
+        self.mark_dirty();
+    }
+
+    // ── IPC queries ──────────────────────────────────────────────────────
+
+    /// Answer (now or later) a request from `rustune list|lyrics|screen|
+    /// key|search|skin`. Returns whether a redraw is needed.
+    fn on_query(&mut self, query: Query, reply: Reply) -> bool {
+        const NO_TUI: &str =
+            "this rustune runs with --daemon: keys and screen need the terminal UI";
+        match query {
+            Query::Queue => answer(reply, reply_line(&QueueReply::of(&self.app))),
+            Query::Lyrics => self.query_lyrics(reply),
+            Query::Screen if !self.tui => answer(reply, error_line(NO_TUI)),
+            Query::Screen => {
+                // Captured right after the next draw (see `run`).
+                self.screen_requests.push(reply);
+                return true;
+            }
+            Query::Keys(_) if !self.tui => answer(reply, error_line(NO_TUI)),
+            Query::Keys(specs) => {
+                let keys: Result<Vec<_>, String> = specs.iter().map(|s| parse_key(s)).collect();
+                match keys {
+                    // Through the channel, exactly like the input thread, so
+                    // they are handled in order with everything else; the
+                    // answer follows the last key.
+                    Ok(keys) => {
+                        for key in keys {
+                            let _ = self.tx.send(AppEvent::Term(Event::Key(key)));
+                        }
+                        let _ = self.tx.send(AppEvent::Answer {
+                            reply,
+                            line: OK.to_string(),
+                        });
+                    }
+                    Err(e) => answer(reply, error_line(&e)),
+                }
+            }
+            Query::Search(search) => {
+                self.start_search(search, reply);
+                return true;
+            }
+            Query::Skin(spec) => self.apply_skin(spec, reply),
+        }
+        false
+    }
+
+    fn search_limit(&self, search: &Search) -> usize {
+        search.limit.unwrap_or(self.app.config.page_size).max(1)
+    }
+
+    /// Run `search` like the matching tab does: the local library, the
+    /// extractor (yt-dlp `ytsearch`) or the provider's search request.
+    fn start_search(&mut self, search: Search, reply: Reply) {
+        match search.source {
+            SearchSource::Local if self.app.library_scanned => {
+                let found = library::search(&self.app.local_library, &search.query);
+                self.finish_search(search, Ok(as_entries(found)), reply, None);
+            }
+            SearchSource::Local => {
+                self.pending_local.push((search, reply));
+                if !self.scanning {
+                    self.start_scan();
+                }
+            }
+            SearchSource::Online => {
+                let name = self.app.config.extractor.clone();
+                let Some(ext) = self.registry.get(&name).cloned() else {
+                    let msg = format!("Unknown extractor '{name}' in config");
+                    answer(reply, error_line(&msg));
+                    return;
+                };
+                let limit = self.search_limit(&search);
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let result = ext.search(&search.query, 0, limit).await.map(as_entries);
+                    let _ = tx.send(AppEvent::SearchDone {
+                        search,
+                        result,
+                        reply,
+                        opened: None,
+                    });
+                });
+            }
+            source => {
+                let Some(kind) = source.provider() else {
+                    return;
+                };
+                if !self.app.config.providers.enabled().contains(&kind) {
+                    let msg = format!(
+                        "{} is not enabled (see [providers] in {})",
+                        kind.display_name(),
+                        Config::path().display()
+                    );
+                    answer(reply, error_line(&msg));
+                    return;
+                }
+                let request = browse::search_request(kind, search.query.trim().to_string());
+                self.fetch_for_search(request, search, reply, None);
+            }
+        }
+    }
+
+    /// Load a provider level for an IPC search in the background.
+    fn fetch_for_search(
+        &self,
+        request: browse::Request,
+        search: Search,
+        reply: Reply,
+        opened: Option<String>,
+    ) {
+        let services = self.services.clone();
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = browse::fetch(&services, &request).map_err(|e| anyhow::anyhow!("{e}"));
+            let _ = tx.send(AppEvent::SearchDone {
+                search,
+                result,
+                reply,
+                opened,
+            });
+        });
+    }
+
+    /// Reply with the results and carry out `search.then`. `opened` names
+    /// the show or album whose tracks these are.
+    fn finish_search(
+        &mut self,
+        search: Search,
+        result: Result<Vec<Entry>>,
+        reply: Reply,
+        opened: Option<String>,
+    ) {
+        let entries = match result {
+            Ok(entries) => entries,
+            Err(e) => {
+                let msg = format!("{} search failed: {e:#}", search.source.name());
+                answer(reply, error_line(&msg));
+                return;
+            }
+        };
+        let limit = self.search_limit(&search);
+        let entries: Vec<Entry> = entries
+            .into_iter()
+            .filter(|e| Hit::of(0, e).is_some())
+            .take(limit)
+            .collect();
+        let results = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| Hit::of(i + 1, e))
+            .collect();
+        let mut out = SearchReply {
+            source: search.source,
+            query: search.query.clone(),
+            results,
+            queued: None,
+            opened,
+            playing: None,
+        };
+        match search.then {
+            Then::Show => {}
+            Then::Queue => {
+                let items = playable(&entries);
+                if items.is_empty() {
+                    let msg = if entries.is_empty() {
+                        "no results to queue".to_string()
+                    } else {
+                        "nothing playable to queue (these results are shows or albums: \
+                         use --play N to open one)"
+                            .to_string()
+                    };
+                    answer(reply, error_line(&msg));
+                    return;
+                }
+                out.queued = Some(items.len());
+                self.append_to_queue(items);
+            }
+            Then::Play(n) => match n.checked_sub(1).and_then(|i| entries.get(i)) {
+                None => {
+                    let msg = format!("no result {n} ({} results)", entries.len());
+                    answer(reply, error_line(&msg));
+                    return;
+                }
+                Some(Entry::Track { item, .. }) => {
+                    let start = entries[..n - 1]
+                        .iter()
+                        .filter(|e| matches!(e, Entry::Track { .. }))
+                        .count();
+                    out.playing = Some(display_title(item));
+                    let items = playable(&entries);
+                    self.resume = None;
+                    self.app.queue.replace(items, Some(start));
+                    self.app.queue.set_cursor(start);
+                    self.play_current();
+                    self.mark_dirty();
+                }
+                // A show or an album: load its tracks, then play the first
+                // (podcast episodes are newest first).
+                Some(Entry::Podcast {
+                    title, feed_url, ..
+                }) => {
+                    let request = browse::Request::PodcastFeed {
+                        feed_url: feed_url.clone(),
+                        title: title.clone(),
+                    };
+                    let next = Search {
+                        then: Then::Play(1),
+                        ..search
+                    };
+                    self.fetch_for_search(request, next, reply, Some(title.clone()));
+                    return;
+                }
+                Some(Entry::Folder { label, request, .. }) => {
+                    let next = Search {
+                        then: Then::Play(1),
+                        ..search
+                    };
+                    self.fetch_for_search(request.clone(), next, reply, Some(label.clone()));
+                    return;
+                }
+                Some(_) => {
+                    answer(reply, error_line(&format!("result {n} cannot be played")));
+                    return;
+                }
+            },
+        }
+        // The client's next `status` must already see the queue change.
+        self.notify_observers();
+        answer(reply, reply_line(&out));
+    }
+
+    /// `rustune skin`: install if needed, load, switch to the Winamp theme.
+    fn apply_skin(&self, spec: String, reply: Reply) {
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let loaded = install_skin(&spec)
+                .and_then(|path| WinampSkin::from_wsz(&path).map(|skin| (path, skin)));
+            match loaded {
+                Ok((path, skin)) => {
+                    let line = serde_json::json!({ "ok": true, "skin": skin.name, "path": path })
+                        .to_string();
+                    let _ = tx.send(AppEvent::SkinLoaded {
+                        path: Some(path),
+                        result: Ok(Box::new(skin)),
+                    });
+                    let _ = tx.send(AppEvent::Command(Command::SetTheme("Winamp".into())));
+                    let _ = tx.send(AppEvent::Answer { reply, line });
+                }
+                Err(e) => answer(reply, error_line(&format!("{e:#}"))),
+            }
+        });
+    }
+
+    /// Where the focused prompt draws its caret, for screen captures.
+    fn caret(&self) -> Option<Caret<'_>> {
+        let prompt =
+            matches!(self.app.mode, Mode::Input | Mode::Onboarding) || self.app.palette.is_some();
+        prompt.then(|| Caret {
+            symbol: &self.app.theme.input_cursor,
+            style: self.app.theme.input_text,
+        })
+    }
+
+    /// Answer the clients waiting for a screen capture.
+    fn answer_screen(&mut self, screen: &crate::ipc::protocol::Screen) {
+        let line = reply_line(screen);
+        for reply in self.screen_requests.drain(..) {
+            answer(reply, line.clone());
         }
     }
 
@@ -1666,11 +2122,24 @@ impl Controller {
                 if token != self.play_token || self.app.playback.is_none() {
                     return false;
                 }
+                self.app.resolving = None;
                 match result {
                     Ok(info) => {
+                        // Pages queued by URL are titled by their URL until
+                        // yt-dlp names them.
+                        let unnamed = self
+                            .app
+                            .queue
+                            .current_mut()
+                            .filter(|item| item.title.is_empty() || item.title == item.id);
+                        if let (Some(item), Some(title)) = (unnamed, info.page_title) {
+                            item.title = title;
+                            self.mark_dirty();
+                        }
+                        let title = self.app.queue.current().map_or(info.title, display_title);
                         if let Some(pb) = &mut self.app.playback {
-                            if !info.title.is_empty() {
-                                pb.title = info.title;
+                            if !title.is_empty() {
+                                pb.title = title;
                             }
                         }
                         self.start_engine(Source::Url(info.url));
@@ -1684,6 +2153,7 @@ impl Controller {
                     Err(e) => {
                         if self.lyrics_key.as_deref() == Some(key.as_str()) {
                             self.app.lyrics = LyricsStatus::Error(e);
+                            self.answer_lyrics_waiters();
                             return true;
                         }
                         return false;
@@ -1695,6 +2165,7 @@ impl Controller {
                         Some(l) => LyricsStatus::Ready(l.clone()),
                         None => LyricsStatus::NotFound,
                     };
+                    self.answer_lyrics_waiters();
                 }
                 self.lyrics_cache.insert(key, lyrics);
                 return current;
@@ -1720,6 +2191,19 @@ impl Controller {
             AppEvent::DepsProbed(deps) => self.app.deps = deps,
             AppEvent::ScanComplete(result) => {
                 self.app.library_scanned = true;
+                self.scanning = false;
+                let failed = result.as_ref().err().map(|e| format!("Scan failed: {e:#}"));
+                for (search, reply) in std::mem::take(&mut self.pending_local) {
+                    match &failed {
+                        Some(msg) => answer(reply, error_line(msg)),
+                        None => {
+                            if let Ok(items) = &result {
+                                let found = library::search(items, &search.query);
+                                self.finish_search(search, Ok(as_entries(found)), reply, None);
+                            }
+                        }
+                    }
+                }
                 match result {
                     Ok(items) => {
                         let n = items.len();
@@ -1743,13 +2227,8 @@ impl Controller {
                 } else if matches!(self.app.status, Status::Loading(_)) {
                     self.app.set_status(Status::Idle);
                 }
-                if append && !items.is_empty() && !self.app.queue.is_empty() {
-                    let n = items.len();
-                    for item in items {
-                        self.app.queue.enqueue(item);
-                    }
-                    self.app.info(format!("Queued {n} item(s)"));
-                    self.mark_dirty();
+                if append {
+                    self.append_to_queue(items);
                 } else if !items.is_empty() {
                     self.resume = None;
                     self.app.queue.replace(items, Some(0));
@@ -1860,6 +2339,18 @@ impl Controller {
                 let _ = done.send(());
                 return false;
             }
+            AppEvent::Query { query, reply } => return self.on_query(query, reply),
+            AppEvent::Answer { reply, line } => {
+                self.notify_observers();
+                answer(reply, line);
+                return false;
+            }
+            AppEvent::SearchDone {
+                search,
+                result,
+                reply,
+                opened,
+            } => self.finish_search(search, result, reply, opened),
         }
         true
     }
@@ -1978,12 +2469,13 @@ pub async fn run(
     let mut redraw = true;
     // Skin images are on screen and must be deleted when the view changes.
     let mut images = false;
+    ctl.tui = true;
     ctl.notify_observers();
     loop {
         if redraw {
             let mut winamp = false;
             let mut height = 0;
-            terminal.draw(|frame| {
+            let drawn = terminal.draw(|frame| {
                 height = frame.area().height;
                 winamp = ui::draw(
                     frame,
@@ -1993,6 +2485,11 @@ pub async fn run(
                     &mut ctl.gfx,
                 );
             })?;
+            // Copy the frame only when a client asked for it.
+            if !ctl.screen_requests.is_empty() {
+                let screen = screen::capture(drawn.buffer, ctl.caret());
+                ctl.answer_screen(&screen);
+            }
             ctl.screen_height = height;
             if winamp {
                 ctl.gfx.flush(terminal.backend_mut())?;
@@ -2742,5 +3239,244 @@ mod tests {
         assert!(!ctl.handle_event(AppEvent::Flush(done)));
         assert!(applied.try_recv().is_ok());
         assert_eq!(seen.get(), 0.3);
+    }
+
+    fn tone(n: usize) -> MediaItem {
+        MediaItem {
+            id: format!("/music/tone{n}.wav"),
+            title: format!("tone{n}"),
+            artist: None,
+            album: None,
+            duration: Some(20),
+            subtitle: None,
+            source: SourceKind::Local,
+        }
+    }
+
+    fn ask(ctl: &mut Controller, query: Query) -> (bool, std::sync::mpsc::Receiver<String>) {
+        let (reply, answer) = std::sync::mpsc::sync_channel(1);
+        let redraw = ctl.handle_event(AppEvent::Query { query, reply });
+        (redraw, answer)
+    }
+
+    fn reply<T: serde::de::DeserializeOwned>(answer: &std::sync::mpsc::Receiver<String>) -> T {
+        let line = answer.try_recv().expect("answered");
+        let value = crate::ipc::protocol::check_reply(&line).expect("no error");
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn error(answer: &std::sync::mpsc::Receiver<String>) -> String {
+        let line = answer.try_recv().expect("answered");
+        crate::ipc::protocol::check_reply(&line).unwrap_err()
+    }
+
+    fn titles(ctl: &mut Controller) -> Vec<String> {
+        let (_, answer) = ask(ctl, Query::Queue);
+        let queue: QueueReply = reply(&answer);
+        queue.items.into_iter().map(|e| e.title).collect()
+    }
+
+    #[test]
+    fn queue_editing_over_ipc() {
+        let (mut ctl, _rx) = controller();
+        ctl.app.queue.replace((0..4).map(tone).collect(), None);
+        ctl.handle_event(AppEvent::Command(Command::MoveInQueue { from: 0, to: 3 }));
+        assert_eq!(titles(&mut ctl), ["tone1", "tone2", "tone3", "tone0"]);
+        ctl.handle_event(AppEvent::Command(Command::RemoveFromQueue(0)));
+        assert_eq!(titles(&mut ctl), ["tone2", "tone3", "tone0"]);
+        // Out of range: nothing happens.
+        ctl.handle_event(AppEvent::Command(Command::MoveInQueue { from: 0, to: 9 }));
+        ctl.handle_event(AppEvent::Command(Command::RemoveFromQueue(7)));
+        assert_eq!(titles(&mut ctl), ["tone2", "tone3", "tone0"]);
+
+        ctl.handle_event(AppEvent::Command(Command::PlayIndex(2)));
+        let (_, answer) = ask(&mut ctl, Query::Queue);
+        let queue: QueueReply = reply(&answer);
+        assert!(queue.items[2].current && queue.items[2].cursor);
+        assert_eq!(queue.items[2].index, 3);
+        assert!(!queue.items[0].current);
+
+        ctl.handle_event(AppEvent::Command(Command::ClearQueue));
+        assert!(titles(&mut ctl).is_empty());
+        assert!(ctl.save_deadline().is_some());
+    }
+
+    #[test]
+    fn local_search_runs_in_the_player() {
+        let (mut ctl, _rx) = controller();
+        // The library is still scanning: the search waits for it.
+        ctl.scanning = true;
+        let search = |then, limit| {
+            Query::Search(Search {
+                source: SearchSource::Local,
+                query: "TONE".into(),
+                limit,
+                then,
+            })
+        };
+        let (_, waiting) = ask(&mut ctl, search(Then::Show, None));
+        assert!(waiting.try_recv().is_err());
+        let mut other = tone(9);
+        other.title = "Other Song".into();
+        ctl.handle_event(AppEvent::ScanComplete(Ok(vec![tone(0), other, tone(1)])));
+        let found: SearchReply = reply(&waiting);
+        let names: Vec<&str> = found.results.iter().map(|h| h.title.as_str()).collect();
+        assert_eq!(names, ["tone0", "tone1"]);
+        assert_eq!(found.results[1].index, 2);
+        assert!(
+            ctl.app.queue.is_empty(),
+            "showing results leaves the queue alone"
+        );
+
+        let (_, answer) = ask(&mut ctl, search(Then::Show, Some(1)));
+        assert_eq!(reply::<SearchReply>(&answer).results.len(), 1);
+
+        let (_, answer) = ask(&mut ctl, search(Then::Queue, None));
+        assert_eq!(reply::<SearchReply>(&answer).queued, Some(2));
+        assert_eq!(ctl.app.queue.len(), 2);
+        assert_eq!(ctl.app.queue.current_index(), Some(0), "empty queue starts");
+
+        let (_, answer) = ask(&mut ctl, search(Then::Play(2), None));
+        assert_eq!(
+            reply::<SearchReply>(&answer).playing.as_deref(),
+            Some("tone1")
+        );
+        assert_eq!(ctl.app.queue.len(), 2);
+        assert_eq!(ctl.app.queue.current_index(), Some(1));
+
+        let (_, answer) = ask(&mut ctl, search(Then::Play(5), None));
+        assert!(error(&answer).contains("no result 5"));
+    }
+
+    #[test]
+    fn disabled_providers_are_reported() {
+        let (mut ctl, _rx) = controller();
+        let (_, answer) = ask(
+            &mut ctl,
+            Query::Search(Search {
+                source: SearchSource::Subsonic,
+                query: "x".into(),
+                limit: None,
+                then: Then::Show,
+            }),
+        );
+        assert!(error(&answer).contains("not enabled"));
+    }
+
+    #[test]
+    fn keys_and_screen_need_the_tui() {
+        let (mut ctl, mut rx) = controller();
+        for query in [Query::Screen, Query::Keys(vec!["j".into()])] {
+            let (_, answer) = ask(&mut ctl, query);
+            assert!(error(&answer).contains("--daemon"));
+        }
+
+        ctl.tui = true;
+        let (redraw, screen) = ask(&mut ctl, Query::Screen);
+        assert!(redraw, "a capture forces a draw");
+        assert!(screen.try_recv().is_err(), "answered after the draw");
+        let drawn = crate::ipc::protocol::Screen {
+            width: 2,
+            height: 1,
+            text: "hi\n".into(),
+            ansi: "hi\n".into(),
+            cursor: None,
+        };
+        ctl.answer_screen(&drawn);
+        assert_eq!(reply::<crate::ipc::protocol::Screen>(&screen), drawn);
+
+        // Keys travel the input thread's path: the event channel, in order,
+        // with the answer after the last one.
+        let (_, keys) = ask(&mut ctl, Query::Keys(vec!["j".into(), "?".into()]));
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        assert!(matches!(
+            &events[..],
+            [
+                AppEvent::Term(Event::Key(j)),
+                AppEvent::Term(Event::Key(q)),
+                AppEvent::Answer { .. },
+            ] if j.code == crossterm::event::KeyCode::Char('j')
+                && q.code == crossterm::event::KeyCode::Char('?')
+        ));
+        assert!(keys.try_recv().is_err());
+        for event in events {
+            ctl.handle_event(event);
+        }
+        assert!(ctl.app.palette.is_some(), "? opened the palette");
+        assert_eq!(keys.try_recv().unwrap(), OK);
+    }
+
+    #[test]
+    fn vis_and_theme_commands() {
+        let (mut ctl, _rx) = controller();
+        ctl.apply(Command::SetVis(crate::vis::VisMode::Scope));
+        assert_eq!(ctl.app.vis_mode, crate::vis::VisMode::Scope);
+        ctl.apply(Command::SetTheme("light".into()));
+        assert_eq!(ctl.app.theme.name, "Light");
+    }
+
+    #[tokio::test]
+    async fn ytdlp_names_pages_queued_by_url() {
+        let (mut ctl, _rx) = controller();
+        let url = "https://soundcloud.com/artist/track";
+        ctl.app.queue.replace(
+            vec![MediaItem {
+                id: url.into(),
+                title: url.into(),
+                artist: None,
+                album: None,
+                duration: None,
+                subtitle: None,
+                source: SourceKind::Extractor("ytdlp".into()),
+            }],
+            Some(0),
+        );
+        ctl.apply(Command::Play);
+        assert!(ctl.app.resolving.is_some(), "yt-dlp lookup in flight");
+        let mut status = crate::ipc::protocol::Status::default();
+        status.update(&ctl.app);
+        assert!(status.resolving);
+
+        let token = ctl.play_token;
+        ctl.handle_event(AppEvent::StreamReady {
+            token,
+            result: Ok(crate::media::StreamInfo {
+                url: "https://cdn.example/a.m4a".into(),
+                title: url.into(),
+                page_title: Some("Artist - Real Name".into()),
+            }),
+        });
+        assert!(ctl.app.resolving.is_none());
+        assert_eq!(ctl.app.queue.items()[0].title, "Artist - Real Name");
+        status.update(&ctl.app);
+        assert!(!status.resolving);
+    }
+
+    #[tokio::test]
+    async fn lyrics_query_without_playback_says_none() {
+        let (mut ctl, _rx) = controller();
+        let (_, answer) = ask(&mut ctl, Query::Lyrics);
+        let lyrics: LyricsReply = reply(&answer);
+        assert!(!lyrics.found);
+        assert_eq!(lyrics.message.as_deref(), Some("nothing is playing"));
+    }
+
+    #[test]
+    fn skin_md5_already_installed_by_content_is_reused() {
+        let dir = std::env::temp_dir().join(format!("rt-skin-md5-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let base = dir.join("base-2.91.wsz");
+        std::fs::write(&base, b"abc").unwrap();
+        // md5("abc"): the same bytes under another name; no download, no copy.
+        let found = install_skin_in(&dir, "900150983CD24FB0D6963F7D28E17F72").unwrap();
+        assert_eq!(found, base);
+        assert_eq!(net::list_skins(&dir), vec![base.clone()]);
+        // Installed names still work, case-insensitively.
+        assert_eq!(install_skin_in(&dir, "BASE-2.91").unwrap(), base);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

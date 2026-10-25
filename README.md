@@ -23,7 +23,7 @@ A lightweight terminal music player: a single small binary with no mpv or other 
 - **Session restore**: volume, balance, EQ, shuffle/repeat, visualizer, queue and resume position
 - **Themes**: Dark, Light and Winamp (`t` cycles, `:theme light` picks); full mouse support
 - **Command palette**: `?` / `Ctrl+K` lists every action for the current view with its key and current value, fuzzy-filtered as you type
-- **Remote control**: `rustune next`, `rustune status --json`, `rustune watch`, … over a local socket; a headless `--daemon` mode; `rustune FILE` queues into the running player instead of starting a second one
+- **Remote control**: everything from the command line over a local socket: playback, queue editing (`list`, `jump`, `move`, `remove`), searching every source (`rustune search online lofi --play 1`), themes, skins and visualizers, lyrics, and driving the TUI itself (`rustune key`, `rustune screen`); a headless `--daemon` mode; `rustune FILE` queues into the running player instead of starting a second one
 - **Media keys and now-playing widgets**: MPRIS2 on Linux (`playerctl`, GNOME/KDE media controls), Now Playing and the media keys on macOS; in the TUI and in `--daemon` mode
 
 ## Screenshots
@@ -120,7 +120,7 @@ rustune [FILE|DIR|URL|PLAYLIST]...
 | Command | Description |
 |---------|-------------|
 | `rustune` | Launch the TUI (restores the last session) |
-| `rustune FILE\|DIR\|URL\|PLAYLIST...` | Replace the queue with the given items and play. Directories are scanned recursively; URLs may be http(s) streams or YouTube links (via yt-dlp); playlists are `.m3u` / `.m3u8` / `.pls`. If rustune is already running, the items are appended to its queue instead |
+| `rustune FILE\|DIR\|URL\|PLAYLIST...` | Replace the queue with the given items and play. Directories are scanned recursively; URLs may be http(s) streams or YouTube, SoundCloud, Bandcamp, Vimeo or Mixcloud pages (via yt-dlp); playlists are `.m3u` / `.m3u8` / `.pls`. If rustune is already running, the items are appended to its queue instead |
 | `rustune --daemon [ITEM...]` | Run without a terminal UI (same engine, queue and session state), controlled with the commands below; SIGINT/SIGTERM save the session and exit |
 | `rustune doctor` | Check optional tools and paths |
 | `rustune --help` | Show help |
@@ -295,31 +295,73 @@ Click a row to play it, use the wheel to scroll, and click the progress bar to s
 
 A running player (TUI or `--daemon`) listens on a local control socket: `$XDG_RUNTIME_DIR/rustune.sock`, falling back to the config directory (mode `0600`), or the named pipe `\\.\pipe\rustune` on Windows. `RUSTUNE_SOCKET` overrides the path, e.g. to run two instances. A socket left behind by a crash is detected and replaced.
 
-| Command | Action |
-|---------|--------|
-| `rustune play` / `pause` / `toggle` / `stop` / `next` / `prev` | Transport |
-| `rustune status [--json]` | Now playing, time, volume, balance, shuffle, repeat, EQ, queue position |
-| `rustune volume 0-100\|+N\|-N` | Set or change the volume (percent) |
-| `rustune seek SECS\|MM:SS\|+N\|-N` | Jump to a position or skip N seconds |
-| `rustune shuffle` | Toggle shuffle |
-| `rustune repeat [off\|all\|one]` | Set the repeat mode (cycle without an argument) |
-| `rustune eq PRESET\|on\|off\|toggle` | Apply a preset (turns the EQ on), or switch the EQ |
-| `rustune queue ITEM...` | Append files, directories, playlists or URLs |
-| `rustune watch` | Print a JSON status line on every change |
-| `rustune quit` | Stop the running instance |
+Every command talks to the running instance and exits with status 1 and a message when none is running (2 for a malformed command line). Queue and search positions start at 1.
 
-The commands exit with status 1 and a message when no instance is running. The protocol is newline-delimited JSON, one object per line, so scripts can talk to the socket directly (e.g. `socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/rustune.sock`):
+| Command | Action | Example |
+|---------|--------|---------|
+| `play` / `pause` / `toggle` / `stop` / `next` / `prev` | Transport | `rustune toggle` |
+| `status [--json]` | Now playing, time, volume, balance, shuffle, repeat, EQ, queue position, source tab, view, theme, visualizer, yt-dlp lookup in flight, last error | `rustune status --json` |
+| `volume 0-100\|+N\|-N` | Set or change the volume (percent) | `rustune volume +5` |
+| `seek SECS\|MM:SS\|+N\|-N` | Jump to a position or skip N seconds | `rustune seek 1:30` |
+| `shuffle` | Toggle shuffle | `rustune shuffle` |
+| `repeat [off\|all\|one]` | Set the repeat mode (cycle without an argument) | `rustune repeat all` |
+| `eq PRESET\|on\|off\|toggle` | Apply a preset (turns the EQ on), or switch the EQ | `rustune eq rock` |
+| `watch` | Print a JSON status line on every change | `rustune watch` |
+| `queue ITEM...` | Append files, directories, playlists or URLs | `rustune queue ~/Music/album https://youtu.be/ID` |
+| `list [--json]` | The queue: position, title, duration, source; `>` marks the playing track, `*` the cursor | `rustune list` |
+| `jump N` | Play queue entry N | `rustune jump 3` |
+| `remove N` | Remove queue entry N | `rustune remove 2` |
+| `move FROM TO` | Move queue entry FROM to position TO | `rustune move 5 1` |
+| `clear` | Stop and empty the queue | `rustune clear` |
+| `search SOURCE QUERY... [--limit N] [--json] [--queue \| --play N]` | Search `local`, `online` (yt-dlp), `radio`, `podcasts`, `subsonic` or `jellyfin` inside the player, the same way its tabs do, and print numbered results. `--queue` appends every playable result; `--play N` replaces the queue with the results and plays result N. Podcast results are shows: `--play N` loads that show's episodes and plays the newest; an album result plays from its first track | `rustune search online lofi beats --play 1` |
+| `theme dark\|light\|winamp` | Switch the theme | `rustune theme winamp` |
+| `vis MODE\|next\|list` | Visualizer: `bars`, `braille`, `led`, `mirror`, `scope`, `spectrogram`, `fire`, `none` | `rustune vis scope` |
+| `skin NAME\|MD5\|FILE.wsz` | Apply a Winamp skin (and the Winamp theme): an installed skin by name, a [Skin Museum](https://skins.webamp.org/) md5 (an installed skin with the same content is used as is, otherwise it is downloaded under its museum file name) or a `.wsz` file (copied into the skins folder) | `rustune skin 5e4f10275dcb1fb211d4a8b4f1bda236` |
+| `lyrics [--json]` | Lyrics of the current track, or why there are none | `rustune lyrics` |
+| `key KEY... [--text WORDS]` | Press keys in the TUI exactly as if typed (see below) | `rustune key ?` |
+| `screen [--ansi] [--json]` | Print the last frame the TUI drew: plain text, with ANSI colours, or as JSON with the prompt's cursor position | `rustune screen` |
+| `send 'JSON'` | Send one raw protocol request and print the raw reply | `rustune send '{"get":"queue"}'` |
+| `quit` | Stop the running instance | `rustune quit` |
+
+Page URLs on `youtube.com` (also `www.`, `m.`, `music.`), `youtu.be`, `soundcloud.com`, `*.bandcamp.com`, `vimeo.com` and `mixcloud.com` are played through yt-dlp, both as arguments (`rustune https://youtu.be/ID`) and with `rustune queue`; the queue shows the URL until yt-dlp reports the title. Direct media URLs (`https://host/stream.mp3`) stream natively.
+
+#### Driving the TUI from a script
+
+`rustune key` injects key presses into a running TUI through the same path as terminal input, and `rustune screen` prints what the TUI drew last (it forces a redraw first). Keys are single characters (`j`, `?`, `G`), names (`Enter`, `Esc`, `Tab`, `BackTab`, `Backspace`, `Up`, `Down`, `Left`, `Right`, `PgUp`, `PgDn`, `Home`, `End`, `Space`, `Del`, `F1`-`F12`) or modifiers joined with `+` (`ctrl+k`, `alt+x`, `shift+Right`); `--text "some words"` types a string. Both commands need the TUI and fail with a clear message against `--daemon`. For example, in a second terminal:
+
+```bash
+rustune ~/Music/album &                    # or start rustune in another terminal
+rustune key j j                            # move the cursor down twice
+rustune screen | grep '>>'                 # the highlighted row
+rustune key /  --text "daft punk" Enter    # search the current source
+rustune key ?                              # open the command palette
+rustune screen | grep -q Commands && echo "palette open"
+rustune key Esc
+rustune status --json                      # "view":"browse", "source":"local", ...
+```
+
+#### Protocol
+
+The protocol is newline-delimited JSON, one object per line, so scripts can talk to the socket directly (e.g. `socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/rustune.sock`):
 
 ```text
 {"cmd":"toggle_pause"}                      → {"ok":true}
 {"cmd":"set_volume","arg":0.5}              → {"ok":true}
 {"cmd":"enqueue","arg":["/music/a.flac"]}   → {"ok":true}
-{"get":"status"}                            → {"status":"playing","title":"…","artist":"…","album":"…","elapsed":42,"duration":215,"volume":50,"balance":0,"shuffle":false,"repeat":"off","eq_enabled":true,"queue_length":12,"queue_index":3}
+{"cmd":"remove_from_queue","arg":0}         → {"ok":true}
+{"cmd":"move_in_queue","arg":{"from":4,"to":0}} → {"ok":true}
+{"get":"status"}                            → {"status":"playing","title":"…","artist":"…","album":"…","elapsed":42,"duration":215,"volume":50,"balance":0,"shuffle":false,"repeat":"off","eq_enabled":true,"queue_length":12,"queue_index":3,"source":"local","view":"browse","theme":"Dark","vis":"bars","resolving":false,"last_error":null}
+{"get":"queue"}                             → {"items":[{"index":1,"title":"…","artist":null,"album":null,"duration":215,"source":"local","id":"/music/a.flac","current":true,"cursor":true}, …]}
+{"get":"lyrics"}                            → {"found":true,"title":"…","message":null,"instrumental":false,"synced":[{"time":12.5,"text":"…"}],"plain":"…"}
+{"get":"screen"}                            → {"width":120,"height":40,"text":"…","ansi":"…","cursor":null}
+{"keys":["j","ctrl+k","Enter"]}             → {"ok":true} once the keys were handled
+{"search":{"source":"online","query":"lofi","limit":5,"then":{"play":1}}} → {"source":"online","query":"lofi","results":[{"index":1,"kind":"track","title":"…",…}],"playing":"…"}
+{"skin":"base-2.91"}                        → {"ok":true,"skin":"…","path":"…"}
 {"subscribe":true}                          → the status object now and after every change
 {"cmd":"dance"}                             → {"error":"bad command: …"}
 ```
 
-`cmd` names are the player commands in snake case (`play`, `pause`, `toggle_pause`, `stop`, `next`, `prev`, `seek_by`, `seek_frac`, `set_volume`, `volume_by`, `set_balance`, `toggle_shuffle`, `cycle_repeat`, `set_repeat`, `toggle_eq`, `eq_preset`, `set_eq_band`, `set_preamp`, `play_index`, `enqueue`, `quit`, …) with any argument in `arg`. A command is answered once the player has applied it.
+`cmd` names are the player commands in snake case (`play`, `pause`, `toggle_pause`, `stop`, `next`, `prev`, `seek_to`, `seek_by`, `seek_frac`, `set_volume`, `volume_by`, `set_balance`, `toggle_shuffle`, `cycle_repeat`, `set_repeat`, `toggle_eq`, `eq_preset`, `set_eq_band`, `set_preamp`, `play_index`, `select`, `enqueue`, `remove_from_queue`, `move_in_queue`, `clear_queue`, `set_theme`, `cycle_theme`, `set_vis`, `cycle_vis`, `toggle_lyrics`, `quit`, …) with any argument in `arg`; their queue indexes start at 0. A command is answered once the player has applied it. Search `then` is `"show"` (default), `"queue"` or `{"play":N}` (1-based, like the result `index`). `keys` and `screen` need the TUI.
 
 ## Configuration
 

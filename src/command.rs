@@ -7,6 +7,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::view::RepeatMode;
+use crate::vis::VisMode;
 
 /// Wire form (IPC): `{"cmd":"toggle_pause"}`, `{"cmd":"set_volume","arg":0.5}`,
 /// `{"cmd":"set_eq_band","arg":{"band":0,"db":3.0}}`. Adjacent tagging
@@ -62,4 +63,15 @@ pub enum Command {
     /// Resolve files, directories, playlists or URLs and append them to the
     /// queue (playing them when the queue was empty).
     Enqueue(Vec<String>),
+    /// Visualizer mode by name (`{"cmd":"set_vis","arg":"scope"}`).
+    SetVis(VisMode),
+    /// Remove queue entry by index.
+    RemoveFromQueue(usize),
+    /// Move a queue entry (indexes into the queue before the move).
+    MoveInQueue {
+        from: usize,
+        to: usize,
+    },
+    /// Stop and empty the queue.
+    ClearQueue,
 }

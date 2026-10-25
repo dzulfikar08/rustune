@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
-use super::{BoxFuture, Extractor};
+use super::{page_url, BoxFuture, Extractor};
 use crate::media::{MediaItem, SourceKind, StreamInfo};
 
 #[derive(Debug, Clone, Deserialize)]
@@ -53,6 +53,22 @@ fn parse_search_output(stdout: &str) -> Vec<MediaItem> {
 /// for the whole track. HLS/Opus-only sources still fall through to `bestaudio`.
 const NATIVE_FIRST_FORMAT: &str = "bestaudio[ext=m4a][protocol^=http]/bestaudio[acodec^=mp4a][protocol^=http]/bestaudio[acodec=mp3][protocol^=http]/bestaudio[protocol^=http]/bestaudio/best";
 
+/// `--print urls --print title` output: the stream URL, then the page
+/// title (used when `fallback_title` is empty).
+fn parse_resolve_output(stdout: &str, fallback_title: &str) -> Result<StreamInfo> {
+    let mut lines = stdout.lines().map(str::trim).filter(|l| !l.is_empty());
+    let url = lines
+        .next()
+        .filter(|l| l.contains("://"))
+        .context("No stream URL returned")?;
+    let page_title = lines.collect::<Vec<_>>().join(" ");
+    Ok(StreamInfo {
+        url: url.to_string(),
+        title: fallback_title.to_string(),
+        page_title: (!page_title.is_empty()).then_some(page_title),
+    })
+}
+
 fn command() -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new("yt-dlp");
     cmd.stdin(Stdio::null()).kill_on_drop(true);
@@ -86,12 +102,20 @@ impl Extractor for YtdlpExtractor {
 
     fn resolve<'a>(&'a self, id: &'a str, title: &'a str) -> BoxFuture<'a, Result<StreamInfo>> {
         Box::pin(async move {
-            let url = format!("https://www.youtube.com/watch?v={id}");
+            let url = page_url(id);
+            // `urls` first: one line per format (one here), then the title.
             let output = tokio::time::timeout(
                 self.timeout,
                 command()
-                    .args(["-f", NATIVE_FIRST_FORMAT, "--get-url", "--"])
-                    .arg(&url)
+                    .args([
+                        "-f",
+                        NATIVE_FIRST_FORMAT,
+                        "--no-playlist",
+                        "--playlist-items",
+                        "1",
+                    ])
+                    .args(["--print", "urls", "--print", "title", "--"])
+                    .arg(url.as_ref())
                     .output(),
             )
             .await
@@ -101,15 +125,7 @@ impl Extractor for YtdlpExtractor {
             if !output.status.success() {
                 anyhow::bail!("Stream extraction failed: {}", stderr_tail(&output.stderr));
             }
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stream_url = stdout.lines().next().unwrap_or("").trim();
-            if stream_url.is_empty() {
-                anyhow::bail!("No stream URL returned");
-            }
-            Ok(StreamInfo {
-                url: stream_url.to_string(),
-                title: title.to_string(),
-            })
+            parse_resolve_output(&String::from_utf8_lossy(&output.stdout), title)
         })
     }
 
@@ -156,21 +172,27 @@ pub async fn download_audio(id: &str, title: &str, music_dir: &Path) -> Result<(
         })
         .collect();
     let safe_title = safe_title.trim().trim_start_matches('.');
-    let safe_title = if safe_title.is_empty() {
-        id
+    let safe_title = if safe_title.is_empty() || safe_title.contains("://") {
+        "download"
     } else {
         safe_title
     };
     let output_template = music_dir.join(format!("{safe_title}.%(ext)s"));
-    let url = format!("https://www.youtube.com/watch?v={id}");
-
+    let url = page_url(id);
     let output = tokio::time::timeout(
         Duration::from_secs(300),
         command()
-            .args(["-x", "--audio-format", "best", "--embed-thumbnail", "-o"])
+            .args([
+                "-x",
+                "--audio-format",
+                "best",
+                "--embed-thumbnail",
+                "--no-playlist",
+                "-o",
+            ])
             .arg(&output_template)
             .arg("--")
-            .arg(&url)
+            .arg(url.as_ref())
             .output(),
     )
     .await
@@ -203,6 +225,17 @@ WARNING: something
         assert!(items
             .iter()
             .all(|i| i.source == SourceKind::Extractor("ytdlp".into())));
+    }
+
+    #[test]
+    fn resolve_output_gives_the_stream_and_page_title() {
+        let info = parse_resolve_output("https://cdn.example/a.m4a\nSome Song\n", "").unwrap();
+        assert_eq!(info.url, "https://cdn.example/a.m4a");
+        assert_eq!(info.page_title.as_deref(), Some("Some Song"));
+        let kept = parse_resolve_output("https://cdn.example/a.m4a\n", "Known").unwrap();
+        assert_eq!((kept.title.as_str(), kept.page_title), ("Known", None));
+        assert!(parse_resolve_output("", "x").is_err());
+        assert!(parse_resolve_output("NA\n", "x").is_err());
     }
 
     #[test]

@@ -183,8 +183,9 @@ pub fn parse_pls(text: &str, base: Option<&Path>) -> Vec<PlaylistEntry> {
         .collect()
 }
 
-/// Turn a playlist entry into a queue item: YouTube URLs go through the
-/// extractor, other URLs stream directly, everything else is a local file.
+/// Turn a playlist entry into a queue item: video and music pages (YouTube,
+/// SoundCloud, ...) go through the extractor, other URLs stream directly,
+/// everything else is a local file.
 pub fn entry_to_item(entry: PlaylistEntry) -> MediaItem {
     if let Some((name, id)) = extractor::parse_url(&entry.location) {
         return MediaItem {
@@ -393,7 +394,7 @@ mod tests {
             duration: Some(212),
         });
         assert_eq!(yt.source, SourceKind::Extractor("ytdlp".into()));
-        assert_eq!(yt.id, "dQw4w9WgXcQ");
+        assert_eq!(yt.id, "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
         let url = entry_to_item(PlaylistEntry {
             location: "https://radio.example/live.mp3".into(),
             title: None,
@@ -439,7 +440,8 @@ mod tests {
         assert_eq!(back[0].duration, Some(100));
         assert_eq!(back[1].id, "/m/b c.flac");
         assert_eq!(back[2].source, SourceKind::Extractor("ytdlp".into()));
-        assert_eq!(back[2].id, "abc123");
+        // Saved as its watch URL, read back as that page.
+        assert_eq!(back[2].id, "https://www.youtube.com/watch?v=abc123");
     }
 
     #[test]

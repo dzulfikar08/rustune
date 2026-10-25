@@ -361,9 +361,9 @@ jobs:
                   daemon.kill()
               sys.exit(1)
 
-          def rt(*args, ok=True):
+          def rt(*args, ok=True, timeout=15):
               p = subprocess.run([BIN, *args], env=env, capture_output=True, text=True,
-                                 timeout=15, stdin=subprocess.DEVNULL)
+                                 timeout=timeout, stdin=subprocess.DEVNULL)
               if ok and p.returncode != 0:
                   fail("rustune %s exited %d: %s%s" % (" ".join(args), p.returncode, p.stdout, p.stderr))
               return p
@@ -457,6 +457,84 @@ jobs:
           if not any(json.loads(l)["volume"] == 30 for l in list(lines)):
               fail("watch missed the volume change: %s" % lines)
 
+          # Queue editing.
+          items = json.loads(rt("list", "--json").stdout)["items"]
+          if [i["title"] for i in items] != ["tone", "tone2"] or not items[1]["current"]:
+              fail("unexpected list --json: %s" % items)
+          human = rt("list").stdout
+          if not re.search(r"^>.\s*2\. tone2\b.*\(local\)$", human, re.M):
+              fail("unexpected list: %r" % human)
+          rt("jump", "1")
+          st = status()
+          if st["queue_index"] != 0 or st["title"] != "tone":
+              fail("after jump 1: %s" % st)
+          rt("move", "2", "1")
+          items = json.loads(rt("list", "--json").stdout)["items"]
+          if [i["title"] for i in items] != ["tone2", "tone"] or not items[1]["current"]:
+              fail("after move 2 1: %s" % items)
+          rt("remove", "1")
+          if [i["title"] for i in json.loads(rt("list", "--json").stdout)["items"]] != ["tone"]:
+              fail("after remove 1: %s" % rt("list").stdout)
+          bad = rt("jump", "9", ok=False)
+          if bad.returncode != 1 or "no item 9" not in bad.stderr:
+              fail("jump 9: %d %r" % (bad.returncode, bad.stderr))
+          bad = rt("jump", "0", ok=False)
+          if bad.returncode != 2:
+              fail("jump 0 accepted: %d %r" % (bad.returncode, bad.stderr))
+
+          # Search the library inside the daemon (it scans on demand).
+          found = json.loads(rt("search", "local", "tone", "--json").stdout)
+          names = sorted(r["title"] for r in found["results"])
+          if names != ["tone", "tone2"] or found["results"][0]["index"] != 1:
+              fail("search local: %s" % found)
+          human = rt("search", "local", "tone2").stdout
+          if "  1. tone2" not in human:
+              fail("unexpected search output: %r" % human)
+          queued = rt("search", "local", "tone2", "--queue").stdout
+          if "Queued 1 track(s)" not in queued or status()["queue_length"] != 2:
+              fail("search --queue: %r %s" % (queued, status()))
+          played = rt("search", "local", "tone", "--play", "2").stdout
+          st = status()
+          want = found["results"][1]["title"]
+          if "Playing: " + want not in played or st["queue_index"] != 1 or st["title"] != want:
+              fail("search --play 2: %r %s" % (played, st))
+          nothing = rt("search", "local", "zzz-no-match", "--json")
+          if json.loads(nothing.stdout)["results"] != []:
+              fail("search for nothing: %r" % nothing.stdout)
+
+          # Status extras, the raw protocol, and what needs the TUI.
+          st = status()
+          for key in ("source", "view", "theme", "vis", "resolving", "last_error"):
+              if key not in st:
+                  fail("status lacks %s: %s" % (key, st))
+          if st["source"] != "local" or st["resolving"] is not False:
+              fail("status extras: %s" % st)
+          raw = json.loads(rt("send", '{"get":"queue"}').stdout)
+          if len(raw["items"]) != 2:
+              fail("send get queue: %s" % raw)
+          bad = rt("send", '{"get":"weather"}', ok=False)
+          if bad.returncode != 1 or "error" not in bad.stdout:
+              fail("send bad request: %d %r" % (bad.returncode, bad.stdout))
+          for args in (["key", "j"], ["screen"]):
+              bad = rt(*args, ok=False)
+              if bad.returncode != 1 or "--daemon" not in bad.stderr:
+                  fail("%s against the daemon: %d %r" % (args, bad.returncode, bad.stderr))
+          rt("vis", "scope")
+          if status()["vis"] != "scope":
+              fail("vis scope not applied: %s" % status())
+          rt("theme", "light")
+          if status()["theme"] != "Light":
+              fail("theme light not applied: %s" % status())
+          # LRCLIB is online: a slow answer is reported, not hung on.
+          lyr = rt("lyrics", ok=False, timeout=45)
+          if not (lyr.returncode == 0 and lyr.stdout.startswith(("No lyrics", "Lyrics"))) \
+                  and "did not answer" not in lyr.stderr:
+              fail("lyrics: %d %r %r" % (lyr.returncode, lyr.stdout, lyr.stderr))
+
+          rt("clear")
+          if status()["queue_length"] != 0:
+              fail("clear not applied: %s" % status())
+
           rt("stop")
           if status()["status"] != "stopped":
               fail("stop not applied: %s" % status())
@@ -487,6 +565,149 @@ jobs:
           if "panicked" in log.read():
               fail("panic in daemon output")
           print("daemon smoke test passed")
+          EOF
+
+      - name: Drive the TUI remotely (key, screen)
+        shell: bash
+        run: |
+          python3 - <<'EOF'
+          import json, math, os, struct, subprocess, sys, tempfile, threading, time, wave
+          import fcntl, termios
+
+          BIN = os.path.abspath("target/release/rustune")
+          tmp = tempfile.mkdtemp()
+          wavs = []
+          for n in (1, 2, 3):
+              path = os.path.join(tmp, "tone%d.wav" % n)
+              with wave.open(path, "wb") as w:
+                  w.setnchannels(2)
+                  w.setsampwidth(2)
+                  w.setframerate(44100)
+                  w.writeframes(b"\0\0\0\0" * 44100 * 30)
+              wavs.append(path)
+          home = os.path.join(tmp, "home")
+          xdg = os.path.join(home, ".config")
+          config = 'onboarding_done = true\nmusic_dir = "%s"\n' % tmp
+          for d in (os.path.join(xdg, "rustune"),
+                    os.path.join(home, "Library", "Application Support", "rustune")):
+              os.makedirs(d, exist_ok=True)
+              with open(os.path.join(d, "config.toml"), "w") as f:
+                  f.write(config)
+          runtime = tempfile.mkdtemp(dir="/tmp")
+          env = dict(os.environ, TERM="xterm-256color", HOME=home, XDG_CONFIG_HOME=xdg,
+                     XDG_RUNTIME_DIR=runtime)
+          env.pop("RUSTUNE_SOCKET", None)
+
+          master, slave = os.openpty()
+          fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+          proc = subprocess.Popen([BIN] + wavs, stdin=slave, stdout=slave, stderr=slave,
+                                  env=env, start_new_session=True)
+          os.close(slave)
+          out = bytearray()
+          def drain():
+              while True:
+                  try:
+                      chunk = os.read(master, 65536)
+                  except OSError:
+                      break
+                  if not chunk:
+                      break
+                  out.extend(chunk)
+          threading.Thread(target=drain, daemon=True).start()
+
+          def fail(msg):
+              print("TUI remote test failed:", msg)
+              print(bytes(out[-2048:]).decode("utf-8", errors="replace"))
+              if proc.poll() is None:
+                  proc.kill()
+              sys.exit(1)
+
+          def rt(*args, ok=True):
+              p = subprocess.run([BIN, *args], env=env, capture_output=True, text=True,
+                                 timeout=15, stdin=subprocess.DEVNULL)
+              if ok and p.returncode != 0:
+                  fail("rustune %s exited %d: %s%s" % (" ".join(args), p.returncode, p.stdout, p.stderr))
+              return p
+
+          def status():
+              p = rt("status", "--json", ok=False)
+              return json.loads(p.stdout) if p.returncode == 0 else None
+
+          def wait_for(pred, what, timeout=20):
+              deadline = time.time() + timeout
+              last = None
+              while time.time() < deadline:
+                  if proc.poll() is not None:
+                      fail("rustune exited early with %d" % proc.returncode)
+                  try:
+                      last = pred()
+                  except Exception as e:
+                      last = e
+                  if last:
+                      return last
+                  time.sleep(0.2)
+              fail("timed out waiting for %s (last: %r)" % (what, last))
+
+          def screen():
+              return rt("screen").stdout
+
+          st = wait_for(lambda: (status() or {}).get("queue_length") == 3 and status(), "the TUI to queue 3 WAVs")
+          print("status:", json.dumps(st))
+          if st["view"] != "browse" or st["source"] != "local":
+              fail("unexpected view/source: %s" % st)
+          # The library list (scanned from music_dir) with its >> highlight.
+          before = wait_for(lambda: (lambda s: "tone3" in s and ">>" in s and s)(screen()), "the library list")
+          print(before)
+          shot = json.loads(rt("screen", "--json").stdout)
+          if (shot["width"], shot["height"]) != (120, 40) or "cursor" not in shot or "ansi" in shot:
+              fail("screen --json: %s" % {k: shot[k] for k in shot if k != "text"})
+          if "\x1b[" not in rt("screen", "--ansi").stdout:
+              fail("screen --ansi has no colours")
+          row = lambda s: next((l for l in s.splitlines() if ">>" in l), "")
+
+          rt("key", "j", "j")
+          after = screen()
+          print(after)
+          if row(after) == row(before) or after == before:
+              fail("j j did not move the highlight: %r -> %r" % (row(before), row(after)))
+          if "tone3" not in row(after):
+              fail("highlight is not on the third track: %r" % row(after))
+
+          rt("key", "?")
+          palette = screen()
+          print(palette)
+          if "Commands" not in palette or "Commands" in after:
+              fail("the palette did not open")
+          if status()["view"] != "palette":
+              fail("status view is not palette: %s" % status())
+          rt("key", "Esc")
+          closed = screen()
+          if "Commands" in closed or status()["view"] != "browse":
+              fail("Esc did not close the palette")
+
+          rt("key", "/", "--text", "tone2")
+          prompt = json.loads(rt("screen", "--json").stdout)
+          if "tone2" not in prompt["text"] or status()["view"] != "input" or prompt["cursor"] is None:
+              fail("typing into the search prompt: %s" % prompt["cursor"])
+          rt("key", "Enter")
+          found = screen()
+          if "tone2" not in row(found) or status()["view"] != "browse":
+              fail("search for tone2 did not select it: %r" % found)
+
+          bad = rt("key", "Enterr", ok=False)
+          if bad.returncode != 2 or "bad key" not in bad.stderr:
+              fail("bad key accepted: %d %r" % (bad.returncode, bad.stderr))
+
+          rt("quit")
+          try:
+              code = proc.wait(timeout=10)
+          except subprocess.TimeoutExpired:
+              fail("quit did not exit")
+          if code != 0:
+              fail("exit status %d" % code)
+          if b"panicked" in out:
+              fail("panic in output")
+          print("TUI remote test passed")
           EOF
 
   screenshots:
