@@ -165,3 +165,184 @@ jobs:
               sys.exit(1)
           print("smoke test passed (%d bytes of output)" % len(out))
           EOF
+      - name: Daemon + remote control
+        shell: bash
+        run: |
+          python3 - <<'EOF'
+          import json, math, os, re, signal, struct, subprocess, sys, tempfile, threading, time, wave
+
+          BIN = os.path.abspath("target/release/rustune")
+          tmp = tempfile.mkdtemp()
+
+          def make_wav(name, secs):
+              path = os.path.join(tmp, name)
+              rate = 44100
+              one = [struct.pack("<hh", s, s) for s in
+                     (int(12000 * math.sin(2 * math.pi * 440 * i / rate)) for i in range(rate // 10))]
+              block = b"".join(one)
+              with wave.open(path, "wb") as w:
+                  w.setnchannels(2)
+                  w.setsampwidth(2)
+                  w.setframerate(rate)
+                  w.writeframes(block * (secs * 10))
+              return path
+
+          wav1 = make_wav("tone.wav", 20)
+          wav2 = make_wav("tone2.wav", 20)
+
+          home = os.path.join(tmp, "home")
+          xdg = os.path.join(home, ".config")
+          config = 'onboarding_done = true\nmusic_dir = "%s"\n' % tmp
+          conf_dirs = [os.path.join(xdg, "rustune"),
+                       os.path.join(home, "Library", "Application Support", "rustune")]
+          for d in conf_dirs:
+              os.makedirs(d, exist_ok=True)
+              with open(os.path.join(d, "config.toml"), "w") as f:
+                  f.write(config)
+          # Short runtime dir: macOS temp paths can exceed the socket path limit.
+          runtime = tempfile.mkdtemp(dir="/tmp")
+          sock = os.path.join(runtime, "rustune.sock")
+          env = dict(os.environ, HOME=home, XDG_CONFIG_HOME=xdg, XDG_RUNTIME_DIR=runtime)
+          env.pop("RUSTUNE_SOCKET", None)
+
+          log = open(os.path.join(tmp, "daemon.log"), "w+")
+          daemon = subprocess.Popen([BIN, "--daemon", wav1], stdin=subprocess.DEVNULL,
+                                    stdout=log, stderr=log, env=env)
+
+          def fail(msg):
+              print("daemon smoke test failed:", msg)
+              log.flush()
+              log.seek(0)
+              print("--- daemon log ---")
+              print(log.read()[-4096:])
+              if daemon.poll() is None:
+                  daemon.kill()
+              sys.exit(1)
+
+          def rt(*args, ok=True):
+              p = subprocess.run([BIN, *args], env=env, capture_output=True, text=True,
+                                 timeout=15, stdin=subprocess.DEVNULL)
+              if ok and p.returncode != 0:
+                  fail("rustune %s exited %d: %s%s" % (" ".join(args), p.returncode, p.stdout, p.stderr))
+              return p
+
+          def status():
+              p = rt("status", "--json", ok=False)
+              return json.loads(p.stdout) if p.returncode == 0 else None
+
+          def wait_for(pred, what, timeout=15):
+              deadline = time.time() + timeout
+              st = None
+              while time.time() < deadline:
+                  if daemon.poll() is not None:
+                      fail("daemon exited early with %d" % daemon.returncode)
+                  st = status()
+                  if st is not None and pred(st):
+                      return st
+                  time.sleep(0.1)
+              fail("timed out waiting for %s (last status: %s)" % (what, st))
+
+          st = wait_for(lambda s: s["queue_length"] == 1 and s["title"] == "tone", "the daemon to queue tone.wav")
+          print("initial status:", json.dumps(st))
+          if oct(os.stat(sock).st_mode & 0o777) != oct(0o600):
+              fail("socket mode is %o, want 600" % (os.stat(sock).st_mode & 0o777))
+          human = rt("status").stdout
+          if "tone" not in human or "Queue:   1/1" not in human:
+              fail("unexpected human status: %r" % human)
+          audio = st["status"] == "playing"
+          print("audio output:", "yes" if audio else "no (runner has no device)")
+
+          rt("pause")
+          st = status()
+          if st["status"] != ("paused" if audio else "stopped"):
+              fail("after pause: %s" % st)
+          rt("toggle")
+          st = status()
+          if st["status"] != ("playing" if audio else "stopped"):
+              fail("after toggle: %s" % st)
+
+          rt("volume", "40")
+          if status()["volume"] != 40:
+              fail("volume 40 not applied: %s" % status())
+          rt("volume", "+5")
+          if status()["volume"] != 45:
+              fail("volume +5 not applied: %s" % status())
+          rt("shuffle")
+          if status()["shuffle"] is not True:
+              fail("shuffle not toggled")
+          rt("shuffle")
+          rt("repeat", "one")
+          if status()["repeat"] != "one":
+              fail("repeat one not applied")
+          rt("repeat", "off")
+          rt("eq", "rock")
+          if status()["eq_enabled"] is not True:
+              fail("eq preset did not enable the EQ")
+          rt("eq", "off")
+          if status()["eq_enabled"] is not False:
+              fail("eq off not applied")
+          rt("seek", "0:02")
+
+          bad = rt("volume", "200", ok=False)
+          if bad.returncode != 2 or "bad volume" not in bad.stderr:
+              fail("bad volume accepted: %d %r" % (bad.returncode, bad.stderr))
+
+          # A second `rustune FILE` hands the file to the running daemon.
+          handoff = rt(wav2)
+          if "queued" not in handoff.stdout:
+              fail("no hand-off message: %r" % handoff.stdout)
+          wait_for(lambda s: s["queue_length"] == 2, "tone2.wav to be queued")
+
+          rt("next")
+          st = status()
+          if st["queue_index"] != 1 or st["title"] != "tone2":
+              fail("after next: %s" % st)
+
+          # watch: a status line now, another on every change.
+          watch = subprocess.Popen([BIN, "watch"], env=env, stdout=subprocess.PIPE, text=True)
+          lines = []
+          threading.Thread(target=lambda: [lines.append(l) for l in watch.stdout], daemon=True).start()
+          deadline = time.time() + 10
+          while not lines and time.time() < deadline:
+              time.sleep(0.05)
+          if not lines:
+              fail("watch printed nothing")
+          json.loads(lines[0])
+          rt("volume", "30")
+          deadline = time.time() + 10
+          while time.time() < deadline and not any(json.loads(l)["volume"] == 30 for l in list(lines)):
+              time.sleep(0.05)
+          if not any(json.loads(l)["volume"] == 30 for l in list(lines)):
+              fail("watch missed the volume change: %s" % lines)
+
+          rt("stop")
+          if status()["status"] != "stopped":
+              fail("stop not applied: %s" % status())
+
+          daemon.send_signal(signal.SIGTERM)
+          try:
+              code = daemon.wait(timeout=10)
+          except subprocess.TimeoutExpired:
+              fail("daemon ignored SIGTERM")
+          if code != 0:
+              fail("daemon exit status %d" % code)
+          try:
+              watch.wait(timeout=5)
+          except subprocess.TimeoutExpired:
+              watch.kill()
+              fail("watch did not end with the daemon")
+          if os.path.exists(sock):
+              fail("socket left behind")
+          states = [os.path.join(d, "state.toml") for d in conf_dirs]
+          saved = [open(p).read() for p in states if os.path.exists(p)]
+          m = re.search(r"^volume = ([0-9.]+)", saved[0] if saved else "", re.M)
+          if not m or abs(float(m.group(1)) - 0.3) > 0.01:
+              fail("session not saved on SIGTERM: %r" % saved)
+          gone = rt("status", ok=False)
+          if gone.returncode != 1 or "no running instance" not in gone.stderr:
+              fail("status without an instance: %d %r" % (gone.returncode, gone.stderr))
+          log.seek(0)
+          if "panicked" in log.read():
+              fail("panic in daemon output")
+          print("daemon smoke test passed")
+          EOF

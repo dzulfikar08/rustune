@@ -8,8 +8,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::view::RepeatMode;
 
+/// Wire form (IPC): `{"cmd":"toggle_pause"}`, `{"cmd":"set_volume","arg":0.5}`,
+/// `{"cmd":"set_eq_band","arg":{"band":0,"db":3.0}}`. Adjacent tagging
+/// because internally tagged enums cannot carry primitive newtype payloads.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "cmd", rename_all = "snake_case")]
+#[serde(tag = "cmd", content = "arg", rename_all = "snake_case")]
 pub enum Command {
     Play,
     Pause,
@@ -56,4 +59,7 @@ pub enum Command {
     CycleTheme,
     /// Built-in theme by name, case-insensitive.
     SetTheme(String),
+    /// Resolve files, directories, playlists or URLs and append them to the
+    /// queue (playing them when the queue was empty).
+    Enqueue(Vec<String>),
 }

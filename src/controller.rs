@@ -4,6 +4,7 @@
 //! the redraw-on-change event loop (paced by the visualizer when it shows).
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -61,6 +62,9 @@ struct Preload {
     id: String,
 }
 
+/// Called with the app state after changes (see `Controller::observers`).
+pub type Observer = Box<dyn FnMut(&App)>;
+
 pub struct Controller {
     pub app: App,
     playback: Playback,
@@ -96,6 +100,9 @@ pub struct Controller {
     vis_at: Instant,
     /// Height of the last drawn frame (decides whether the vis strip shows).
     screen_height: u16,
+    /// Notified with the app state after every change (IPC status, OS media
+    /// controls). Each observer diffs cheaply against what it last saw.
+    pub observers: Vec<Observer>,
 }
 
 /// Parse a `:command` typed into the prompt into a player `Command`.
@@ -150,7 +157,7 @@ fn parse_colon(input: &str) -> Result<Command, String> {
 }
 
 /// `90`, `1:30`, `1:02:03` → absolute; `+10` / `-10` → relative seconds.
-fn parse_seek(pos: &str) -> Result<Command, String> {
+pub(crate) fn parse_seek(pos: &str) -> Result<Command, String> {
     let bad = || format!("Bad position '{pos}' (use 90, 1:30, +10 or -10)");
     if let Some(delta) = pos.strip_prefix('+') {
         return delta.parse::<i64>().map(Command::SeekBy).map_err(|_| bad());
@@ -273,6 +280,14 @@ impl Controller {
             pacer: FramePacer::default(),
             vis_at: Instant::now(),
             screen_height: 0,
+            observers: Vec::new(),
+        }
+    }
+
+    /// Tell every observer the app state may have changed.
+    pub fn notify_observers(&mut self) {
+        for observer in &mut self.observers {
+            observer(&self.app);
         }
     }
 
@@ -295,8 +310,14 @@ impl Controller {
             let _ = tx.send(AppEvent::DefaultSkinReady(result));
         });
 
+        self.start_headless(inputs);
+    }
+
+    /// Startup for `--daemon` (and the tail of [`start`]): only the given
+    /// inputs; no library scan, skins or dependency probe.
+    pub fn start_headless(&mut self, inputs: Vec<String>) {
         if !inputs.is_empty() {
-            self.resolve_into_queue(inputs);
+            self.resolve_into_queue(inputs, false);
         }
     }
 
@@ -320,13 +341,19 @@ impl Controller {
         });
     }
 
-    fn resolve_into_queue(&mut self, inputs: Vec<String>) {
+    /// Resolve `inputs` in the background; `append` adds them to a non-empty
+    /// queue instead of replacing it.
+    fn resolve_into_queue(&mut self, inputs: Vec<String>, append: bool) {
         self.app.set_status(Status::Loading("Opening…".into()));
         let exts = self.app.config.extensions.clone();
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
             let (items, errors) = crate::cli::resolve_inputs(&inputs, &exts);
-            let _ = tx.send(AppEvent::QueueResolved { items, errors });
+            let _ = tx.send(AppEvent::QueueResolved {
+                items,
+                errors,
+                append,
+            });
         });
     }
 
@@ -1038,6 +1065,7 @@ impl Controller {
                         .error(format!("Unknown theme '{name}' ({})", names.join(", ")));
                 }
             },
+            Command::Enqueue(inputs) => self.resolve_into_queue(inputs, true),
         }
     }
 
@@ -1315,7 +1343,7 @@ impl Controller {
                     Err(e) => self.app.error(format!("{e:#}")),
                 }
             }
-            InputPurpose::Open => self.resolve_into_queue(vec![text]),
+            InputPurpose::Open => self.resolve_into_queue(vec![text], false),
         }
     }
 
@@ -1567,13 +1595,24 @@ impl Controller {
                     Err(e) => self.app.error(format!("Scan failed: {e:#}")),
                 }
             }
-            AppEvent::QueueResolved { items, errors } => {
+            AppEvent::QueueResolved {
+                items,
+                errors,
+                append,
+            } => {
                 if !errors.is_empty() {
                     self.app.error(errors.join("; "));
                 } else if matches!(self.app.status, Status::Loading(_)) {
                     self.app.set_status(Status::Idle);
                 }
-                if !items.is_empty() {
+                if append && !items.is_empty() && !self.app.queue.is_empty() {
+                    let n = items.len();
+                    for item in items {
+                        self.app.queue.enqueue(item);
+                    }
+                    self.app.info(format!("Queued {n} item(s)"));
+                    self.mark_dirty();
+                } else if !items.is_empty() {
                     self.resume = None;
                     self.app.queue.replace(items, Some(0));
                     self.play_current();
@@ -1677,6 +1716,12 @@ impl Controller {
                 } else {
                     return false;
                 }
+            }
+            AppEvent::Command(cmd) => self.apply(cmd),
+            AppEvent::Flush(done) => {
+                self.notify_observers();
+                let _ = done.send(());
+                return false;
             }
         }
         true
@@ -1784,6 +1829,7 @@ pub async fn run(
     let mut redraw = true;
     // Skin images are on screen and must be deleted when the view changes.
     let mut images = false;
+    ctl.notify_observers();
     loop {
         if redraw {
             let mut winamp = false;
@@ -1823,9 +1869,15 @@ pub async fn run(
             event = rx.recv() => {
                 let Some(event) = event else { return Ok(()) };
                 redraw = ctl.drain(event, &mut rx);
+                if redraw {
+                    ctl.notify_observers();
+                }
             }
             () = tokio::time::sleep(tick.unwrap_or_default()), if tick.is_some() => {
                 redraw = ctl.on_tick();
+                if redraw {
+                    ctl.notify_observers();
+                }
             }
             () = tokio::time::sleep_until(save_at.unwrap_or_else(Instant::now)), if save_at.is_some() => {
                 ctl.flush_state();
@@ -1833,6 +1885,42 @@ pub async fn run(
         }
     }
 }
+
+/// The event loop without a terminal (`rustune --daemon`): the same
+/// dispatch, playback clock and autosave as [`run`], minus drawing. Returns
+/// on `Command::Quit`, when every sender is gone, or when `shutdown` resolves.
+pub async fn run_headless(
+    ctl: &mut Controller,
+    mut rx: UnboundedReceiver<AppEvent>,
+    shutdown: impl Future<Output = ()>,
+) {
+    let mut shutdown = std::pin::pin!(shutdown);
+    ctl.notify_observers();
+    while !ctl.app.should_quit {
+        // Wake on whole seconds of the track clock (status `elapsed`,
+        // scrobble progress); fully asleep otherwise.
+        let tick = (ctl.app.play_status() == PlayStatus::Playing && ctl.started).then(|| {
+            Duration::from_millis(1005 - u64::from(ctl.playback.position().subsec_millis()))
+        });
+        let save_at = ctl.save_deadline();
+        let changed = tokio::select! {
+            event = rx.recv() => match event {
+                Some(event) => ctl.drain(event, &mut rx),
+                None => return,
+            },
+            () = tokio::time::sleep(tick.unwrap_or_default()), if tick.is_some() => ctl.sync_position(),
+            () = tokio::time::sleep_until(save_at.unwrap_or_else(Instant::now)), if save_at.is_some() => {
+                ctl.flush_state();
+                false
+            }
+            () = &mut shutdown => return,
+        };
+        if changed {
+            ctl.notify_observers();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2420,5 +2508,37 @@ mod tests {
         assert_eq!(ctl.app.vis_mode, crate::vis::VisMode::Fire);
         assert_eq!(ctl.resume, Some((2, 42)));
         assert_eq!(ctl.session_state().position_secs, 42);
+    }
+
+    #[test]
+    fn enqueue_appends_or_starts_an_empty_queue() {
+        let (mut ctl, _rx) = controller();
+        let resolved = |items: Vec<MediaItem>| AppEvent::QueueResolved {
+            items,
+            errors: vec![],
+            append: true,
+        };
+        ctl.handle_event(resolved(vec![url_item(0)]));
+        assert_eq!(ctl.app.queue.current_index(), Some(0), "empty queue: play");
+        ctl.handle_event(resolved(vec![url_item(1), url_item(2)]));
+        assert_eq!(ctl.app.queue.len(), 3);
+        assert_eq!(ctl.app.queue.items()[2].id, url_item(2).id);
+        assert_eq!(ctl.app.queue.current_index(), Some(0), "current track kept");
+        assert!(ctl.save_deadline().is_some());
+    }
+
+    #[test]
+    fn external_commands_apply_and_flush_notifies_observers() {
+        let (mut ctl, _rx) = controller();
+        let seen = std::rc::Rc::new(std::cell::Cell::new(-1.0));
+        let observed = seen.clone();
+        ctl.observers
+            .push(Box::new(move |app: &App| observed.set(app.volume)));
+        assert!(ctl.handle_event(AppEvent::Command(Command::SetVolume(0.3))));
+        assert_eq!(seen.get(), -1.0, "observers run after the event batch");
+        let (done, applied) = std::sync::mpsc::sync_channel(1);
+        assert!(!ctl.handle_event(AppEvent::Flush(done)));
+        assert!(applied.try_recv().is_ok());
+        assert_eq!(seen.get(), 0.3);
     }
 }

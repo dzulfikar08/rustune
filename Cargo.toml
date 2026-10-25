@@ -12,7 +12,9 @@ categories = ["command-line-utilities", "multimedia::audio"]
 [dependencies]
 ratatui = "0.29"
 crossterm = "0.28"
-tokio = { version = "1", default-features = false, features = ["rt", "macros", "sync", "time", "process"] }
+# `signal`: daemon SIGINT/SIGTERM; adds no crates (signal-hook-registry is
+# already pulled in by `process`).
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "sync", "time", "process", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
@@ -27,6 +29,10 @@ md-5 = "0.10"
 # zlib for kitty graphics payloads and the PNG encoder (iTerm2, skin previews);
 # already in the tree via zip, default miniz_oxide backend.
 flate2 = "1"
+
+# Named-pipe server for IPC; same windows-sys tokio already uses (no new crate).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Pipes"] }
 
 [profile.release]
 lto = "fat"

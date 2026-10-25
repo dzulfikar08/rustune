@@ -10,6 +10,7 @@ mod event;
 mod extractor;
 mod gfx;
 mod install;
+mod ipc;
 mod keymap;
 mod library;
 mod media;
@@ -75,13 +76,32 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Ok(Cli::Run { inputs }) => match run_tui(inputs) {
+        Ok(Cli::Remote(remote)) => ipc::client::run(remote),
+        Ok(Cli::Daemon { inputs }) => match ipc::daemon::run(inputs) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("rustune: {e:#}");
                 ExitCode::FAILURE
             }
         },
+        Ok(Cli::Run { inputs }) => {
+            // Another instance is running: queue the items there.
+            let handed_off = if inputs.is_empty() {
+                None
+            } else {
+                ipc::client::hand_off(&inputs)
+            };
+            if let Some(code) = handed_off {
+                return code;
+            }
+            match run_tui(inputs) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("rustune: {e:#}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
     }
 }
 
@@ -129,6 +149,17 @@ fn run_tui(inputs: Vec<String>) -> Result<()> {
         }
         let painter = graphics_painter(&config, winamp);
         let mut ctl = Controller::new(config, state, tx.clone(), playback, painter);
+        // Remote control; without it (e.g. a second instance) the TUI still runs.
+        let remote = match ipc::IpcServer::start(ipc::endpoint(), tx.clone()) {
+            Ok(server) => {
+                ctl.observers.push(server.observer());
+                Some(server)
+            }
+            Err(e) => {
+                ctl.app.error(format!("Remote control unavailable: {e}"));
+                None
+            }
+        };
         if let Some(warning) = config_warning.or(state_warning) {
             ctl.app.error(warning);
         }
@@ -144,6 +175,7 @@ fn run_tui(inputs: Vec<String>) -> Result<()> {
         let result = controller::run(terminal, &mut ctl, rx, &input).await;
         restore_terminal();
         ctl.shutdown();
+        drop(remote);
         result
     });
     // Don't wait for in-flight blocking work (scans, downloads) on exit.
