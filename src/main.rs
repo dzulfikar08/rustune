@@ -10,6 +10,7 @@ mod event;
 mod extractor;
 mod gfx;
 mod install;
+mod keymap;
 mod library;
 mod media;
 mod net;

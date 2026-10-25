@@ -58,3 +58,4 @@ cargo test
 - Follow standard Rust conventions (`cargo fmt`)
 - Run `cargo clippy` and address warnings
 - Keep functions focused and readable
+- Key bindings live in one table, `src/keymap.rs`; the key handler, the command palette, the hint bars, `--help` and the README tables all read it. After changing a binding, run `cargo test readme_keybindings` and paste the table it prints into `README.md`.

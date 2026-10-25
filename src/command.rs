@@ -52,4 +52,8 @@ pub enum Command {
     CycleVis,
     ToggleLyrics,
     Quit,
+    /// Next built-in theme (Dark → Light → Winamp).
+    CycleTheme,
+    /// Built-in theme by name, case-insensitive.
+    SetTheme(String),
 }

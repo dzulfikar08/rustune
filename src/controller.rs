@@ -143,6 +143,8 @@ fn parse_colon(input: &str) -> Result<Command, String> {
         ("eq", Some("toggle")) => Command::ToggleEq,
         ("eq", Some("auto")) => Command::ToggleEqAuto,
         ("eq", Some(_)) => Command::EqPreset(words[1..].join(" ")),
+        ("theme", None) => Command::CycleTheme,
+        ("theme", Some(_)) => Command::SetTheme(words[1..].join(" ")),
         _ => return Err(format!("Unknown command: :{input}")),
     })
 }
@@ -1026,6 +1028,16 @@ impl Controller {
                 }
             }
             Command::Quit => self.app.should_quit = true,
+            Command::CycleTheme => self.set_theme(Theme::next_after(&self.app.theme.name)),
+            Command::SetTheme(name) => match Theme::find(&name) {
+                Some(theme) => self.set_theme(theme),
+                None => {
+                    let names: Vec<String> =
+                        Theme::builtins().into_iter().map(|t| t.name).collect();
+                    self.app
+                        .error(format!("Unknown theme '{name}' ({})", names.join(", ")));
+                }
+            },
         }
     }
 
@@ -1075,7 +1087,7 @@ impl Controller {
     }
 
     fn on_mouse(&mut self, mouse: MouseEvent) {
-        if self.app.mode != Mode::Browse {
+        if self.app.mode != Mode::Browse || self.app.palette.is_some() {
             return;
         }
         if self.app.is_winamp() {
@@ -1141,6 +1153,7 @@ impl Controller {
                 }
             }
             BrowseAction::OpenSettings => self.app.mode = Mode::Settings,
+            BrowseAction::ClearQueue => self.clear_queue(),
             BrowseAction::SwitchTab(forward) => self.switch_tab(forward),
             BrowseAction::Download(id, title) => {
                 if self.app.deps.ytdlp == DepStatus::Missing {
@@ -1308,13 +1321,7 @@ impl Controller {
 
     fn on_colon(&mut self, cmd: &str) {
         match cmd.trim() {
-            "clear" => {
-                self.stop();
-                self.app.queue.clear();
-                self.resume = None;
-                self.app.info("Queue cleared");
-                self.mark_dirty();
-            }
+            "clear" => self.clear_queue(),
             "eq" => {
                 let names: Vec<&str> = eq_presets::PRESETS.iter().map(|(n, _)| *n).collect();
                 self.app.info(format!("EQ presets: {}", names.join(", ")));
@@ -1324,6 +1331,14 @@ impl Controller {
                 Err(msg) => self.app.error(msg),
             },
         }
+    }
+
+    fn clear_queue(&mut self) {
+        self.stop();
+        self.app.queue.clear();
+        self.resume = None;
+        self.app.info("Queue cleared");
+        self.mark_dirty();
     }
 
     fn on_settings_action(&mut self, action: SettingsAction) {
@@ -1359,6 +1374,13 @@ impl Controller {
                 }
             }
         }
+    }
+
+    fn set_theme(&mut self, theme: Theme) {
+        self.app.set_theme(theme);
+        self.app.info(format!("Theme: {}", self.app.theme.name));
+        self.theme_changed();
+        self.mark_dirty();
     }
 
     fn theme_changed(&mut self) {
@@ -2291,6 +2313,22 @@ mod tests {
     }
 
     #[test]
+    fn theme_commands_switch_and_persist() {
+        let (mut ctl, _rx) = controller();
+        assert_eq!(ctl.app.theme.name, "Dark");
+        ctl.apply(Command::CycleTheme);
+        assert_eq!(ctl.app.theme.name, "Light");
+        assert_eq!(ctl.app.config.theme, "Light");
+        assert!(ctl.save_at.is_some(), "theme is saved with the session");
+        ctl.apply(Command::SetTheme("DARK".into()));
+        assert_eq!(ctl.app.theme.name, "Dark", "names are case-insensitive");
+        ctl.apply(Command::SetTheme("neon".into()));
+        assert!(matches!(&ctl.app.status, Status::Error(m) if m.contains("Dark, Light, Winamp")));
+        assert_eq!(ctl.app.theme.name, "Dark");
+        assert_eq!(Theme::next_after("Winamp").name, "Dark", "cycling wraps");
+    }
+
+    #[test]
     fn stale_async_results_are_ignored() {
         let (mut ctl, _rx) = controller();
         ctl.search_token = 2;
@@ -2346,6 +2384,8 @@ mod tests {
         assert_eq!(ok("eq toggle"), Command::ToggleEq);
         assert_eq!(ok("eq auto"), Command::ToggleEqAuto);
         assert_eq!(ok("eq full bass"), Command::EqPreset("full bass".into()));
+        assert_eq!(ok("theme"), Command::CycleTheme);
+        assert_eq!(ok("theme light"), Command::SetTheme("light".into()));
         for bad in [
             "band 11 1",
             "band 0 1",

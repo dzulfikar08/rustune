@@ -46,6 +46,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
 }
 
 pub fn help_text(program: &str) -> String {
+    let mut keys = String::new();
+    crate::keymap::write_help(&mut keys);
     format!(
         "rustune {version} — terminal music player
 
@@ -60,35 +62,12 @@ ARGUMENTS:
     URL        http(s) stream or radio playlist, or a YouTube URL (yt-dlp)
     PLAYLIST   .m3u / .m3u8 / .pls (entries relative to the playlist)
 
-KEYS (transport, Winamp style; work everywhere in the player):
-    z  previous   x  play   c  pause   v  stop   b  next   Space  play/pause
-    ←/→  seek ∓5 s        Shift+←/→  seek ∓30 s
-    + / = / -  volume     S  shuffle   R  repeat (off/all/one)
-    e  EQ panel   P  playlist window   l  open file/URL   w  save queue as .m3u
-    V  cycle visualizer    y  lyrics panel    q / Ctrl+C  quit
+In the player, press ? or Ctrl+K for a searchable list of every command.
 
-KEYS (library):
-    /            search            j/k ↓/↑     move           g/G   first/last
-    Enter        play list as queue           a     append to queue
-    A            play next                    n/p   next/prev result page (online)
-    Tab/S-Tab    source tab: Local, Online, Radio, Podcasts, Subsonic, Jellyfin
-    d            download (online)            s     settings
-
-KEYS (Radio, Podcasts, Subsonic, Jellyfin):
-    Enter  open / play   Backspace/Esc  up a level   /  search   r  reload
-    f      subscribe to / unsubscribe from a podcast
-
-KEYS (playlist window, P):
-    j/k  move   Enter  play   J/K  reorder   D/Del  remove   P  back to library
-
-KEYS (EQ panel, e):
-    ←/→ h/l  select slider   ↑/↓ k/j  ±1 dB   K/J  ±3 dB   0  reset slider
-    o  EQ on/off             [ / ]  previous/next preset
-
-COMMANDS (type after /):
+{keys}COMMANDS (type after / or :):
     :q  quit   :clear  clear the queue   :eq <preset>|toggle|auto   :vol N   :bal N
     :seek 90|1:30|+10|-10   :repeat off|all|one   :shuffle   :preamp dB   :band 1-10 dB
-    :play :pause :toggle :stop :next :prev :open
+    :theme [dark|light|winamp]   :play :pause :toggle :stop :next :prev :open
 
 FILES:
     config      {config}
@@ -252,15 +231,16 @@ mod tests {
     }
 
     #[test]
-    fn help_mentions_every_transport_key() {
+    fn help_lists_the_key_table() {
         let help = help_text("rustune");
+        for b in crate::keymap::BINDINGS {
+            assert!(help.contains(b.desc), "{}", b.desc);
+        }
         for needle in [
-            "z  previous",
-            "Shift+←/→",
-            "w  save queue",
-            "V  cycle visualizer",
-            "y  lyrics",
+            "Shift+←",
             "Backspace/Esc",
+            "?/Ctrl+K",
+            ":theme",
             "doctor",
             ".pls",
         ] {
