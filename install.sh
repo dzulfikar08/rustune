@@ -8,6 +8,8 @@
 #   RUSTUNE_INSTALL_DIR  where to install (default: ~/.local/bin)
 #   RUSTUNE_VERSION      release tag to install, e.g. v0.3.6 (default: latest)
 #   RUSTUNE_BASE_URL     folder holding the release files (mirrors, testing)
+#   GITHUB_TOKEN         optional; only sent to api.github.com, which older
+#                        releases need for checksums (avoids its rate limit)
 
 set -eu
 
@@ -20,12 +22,12 @@ die() {
     exit 1
 }
 
-# download URL FILE
+# download URL FILE [HEADER]
 download() {
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --retry 3 -o "$2" "$1"
+        curl -fsSL --retry 3 ${3:+-H "$3"} -o "$2" "$1"
     elif command -v wget >/dev/null 2>&1; then
-        wget -q -O "$2" "$1"
+        wget -q ${3:+--header="$3"} -O "$2" "$1"
     else
         die "curl or wget is required"
     fi
@@ -97,7 +99,8 @@ elif [ -z "${RUSTUNE_BASE_URL:-}" ]; then
     else
         api="https://api.github.com/repos/$REPO/releases/latest"
     fi
-    download "$api" "$tmp/release.json" || die "cannot fetch $api to verify the download"
+    download "$api" "$tmp/release.json" ${GITHUB_TOKEN:+"Authorization: Bearer $GITHUB_TOKEN"} ||
+        die "cannot fetch $api to verify the download"
     expected=$(tr ',' '\n' <"$tmp/release.json" | awk -v f="\"$asset\"" '
         /"name" *:/ { n = $0; sub(/.*"name" *: */, "", n); sub(/[ }\]]*$/, "", n); hit = (n == f) }
         hit && /"digest" *: *"sha256:/ { d = $0; sub(/.*"sha256:/, "", d); sub(/".*/, "", d); print d; exit }')

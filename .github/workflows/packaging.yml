@@ -45,7 +45,11 @@ jobs:
       - uses: actions/checkout@v4
       - if: runner.os == 'Linux'
         run: shellcheck install.sh
+      # Releases up to v0.3.6 have no SHA256SUMS, so install.sh asks the
+      # GitHub API; the token keeps shared runner IPs off its rate limit.
       - name: Install the published release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -x
           RUSTUNE_INSTALL_DIR="$RUNNER_TEMP/latest" sh install.sh
