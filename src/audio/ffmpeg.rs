@@ -219,11 +219,8 @@ impl Pcm for Ffmpeg {
             if whole == 0 {
                 continue;
             }
-            out.extend(
-                self.leftover[..whole]
-                    .chunks_exact(4)
-                    .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])),
-            );
+            let (samples, _) = self.leftover[..whole].as_chunks::<4>();
+            out.extend(samples.iter().map(|b| f32::from_le_bytes(*b)));
             self.leftover.drain(..whole);
             self.got_audio = true;
             return Ok(true);

@@ -1,4 +1,4 @@
-//! Public [`Engine`] handle and its controller thread.
+//! Controller thread behind [`super::Engine`].
 //!
 //! The controller owns every track (`Arc<Track>`), publishes the current and
 //! preloaded track to the audio callback through two `AtomicPtr`s, turns
@@ -12,15 +12,15 @@ use std::sync::{Arc, OnceLock};
 use std::thread::{self, JoinHandle, Thread};
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, bail};
+use anyhow::anyhow;
 
 use super::decode::{self, frames_at, Emit};
 use super::dsp::DspParams;
 use super::output::{self, OutFormat, Output};
 use super::track::{Track, ENDED, FAILED, STARTED, STOP};
-use super::{EngineEvent, ReplayGainMode, Source};
+use super::{EngineEvent, Source};
 use crate::tap::Tap;
-use crate::view::{EqSettings, PlayStatus};
+use crate::view::PlayStatus;
 
 /// After playback ends, keep the device running this long so its last
 /// buffer drains before the stream is paused.
@@ -87,7 +87,7 @@ impl Shared {
         self.tap.set_format(fmt.channels as u16, fmt.rate);
     }
 
-    fn status(&self) -> PlayStatus {
+    pub fn status(&self) -> PlayStatus {
         match self.status.load(Ordering::Acquire) {
             1 => PlayStatus::Playing,
             2 => PlayStatus::Paused,
@@ -95,7 +95,7 @@ impl Shared {
         }
     }
 
-    fn set_status(&self, s: PlayStatus) {
+    pub fn set_status(&self, s: PlayStatus) {
         let v = match s {
             PlayStatus::Stopped => 0,
             PlayStatus::Playing => 1,
@@ -103,9 +103,13 @@ impl Shared {
         };
         self.status.store(v, Ordering::Release);
     }
+
+    pub fn out_rate(&self) -> u32 {
+        self.out_rate.load(Ordering::Relaxed)
+    }
 }
 
-enum Cmd {
+pub enum Cmd {
     Play(Source, u64),
     Preload(Source, u64),
     /// Pause/resume flags changed; re-evaluate the output stream.
@@ -120,7 +124,7 @@ enum Cmd {
 
 /// Where audio goes.
 #[derive(Clone, Copy)]
-enum Backend {
+pub enum Backend {
     Device,
     #[cfg(test)]
     Headless {
@@ -146,183 +150,49 @@ impl Backend {
     }
 }
 
-/// Handle to the playback engine. All methods are non-blocking: IO, decoding
-/// and process management happen on engine threads.
-pub struct Engine {
-    shared: Arc<Shared>,
-    tx: Sender<Cmd>,
-    thread: Option<JoinHandle<()>>,
-}
-
-impl Engine {
-    /// Open the default output device and start the engine threads.
-    pub fn new(
-        tap: Arc<Tap>,
-        on_event: Box<dyn Fn(EngineEvent) + Send + Sync>,
-    ) -> anyhow::Result<Self> {
-        Self::start(tap, on_event, Backend::Device)
-    }
-
-    #[cfg(test)]
-    fn headless(
-        tap: Arc<Tap>,
-        on_event: Box<dyn Fn(EngineEvent) + Send + Sync>,
-        fmt: OutFormat,
-        realtime: bool,
-    ) -> anyhow::Result<Self> {
-        Self::start(tap, on_event, Backend::Headless { fmt, realtime })
-    }
-
-    fn start(
-        tap: Arc<Tap>,
-        on_event: Box<dyn Fn(EngineEvent) + Send + Sync>,
-        backend: Backend,
-    ) -> anyhow::Result<Self> {
-        let shared = Arc::new(Shared::new(tap));
-        let emit: Emit = Arc::from(on_event);
-        let (tx, rx) = mpsc::channel();
-        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let sh = shared.clone();
-        let thread = thread::Builder::new()
-            .name("rustune-audio".into())
-            .spawn(move || {
-                let _ = sh.controller.set(thread::current());
-                match backend.open(&sh, None) {
-                    Ok((output, fmt)) => {
-                        let _ = ready_tx.send(Ok(()));
-                        Controller {
-                            shared: sh,
-                            emit,
-                            backend,
-                            output: Some(output),
-                            fmt,
-                            tracks: Vec::new(),
-                            running: false,
-                            idle_since: None,
-                        }
-                        .run(&rx);
+/// Start the controller thread and open the output. Returns once the output is
+/// open (or failed to open).
+pub fn spawn(
+    tap: Arc<Tap>,
+    on_event: Box<dyn Fn(EngineEvent) + Send + Sync>,
+    backend: Backend,
+) -> anyhow::Result<(Arc<Shared>, Sender<Cmd>, JoinHandle<()>)> {
+    let shared = Arc::new(Shared::new(tap));
+    let emit: Emit = Arc::from(on_event);
+    let (tx, rx) = mpsc::channel();
+    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    let sh = shared.clone();
+    let thread = thread::Builder::new()
+        .name("rustune-audio".into())
+        .spawn(move || {
+            let _ = sh.controller.set(thread::current());
+            match backend.open(&sh, None) {
+                Ok((output, fmt)) => {
+                    let _ = ready_tx.send(Ok(()));
+                    Controller {
+                        shared: sh,
+                        emit,
+                        backend,
+                        output: Some(output),
+                        fmt,
+                        tracks: Vec::new(),
+                        running: false,
+                        idle_since: None,
                     }
-                    Err(e) => {
-                        let _ = ready_tx.send(Err(e));
-                    }
+                    .run(&rx);
                 }
-            })?;
-        match ready_rx.recv() {
-            Ok(Ok(())) => Ok(Self {
-                shared,
-                tx,
-                thread: Some(thread),
-            }),
-            Ok(Err(e)) => {
-                let _ = thread.join();
-                Err(e)
+                Err(e) => {
+                    let _ = ready_tx.send(Err(e));
+                }
             }
-            Err(_) => Err(anyhow!("audio engine thread exited during startup")),
+        })?;
+    match ready_rx.recv() {
+        Ok(Ok(())) => Ok((shared, tx, thread)),
+        Ok(Err(e)) => {
+            let _ = thread.join();
+            Err(e)
         }
-    }
-
-    fn send(&self, cmd: Cmd) {
-        let _ = self.tx.send(cmd);
-        self.shared.wake_controller();
-    }
-
-    /// Play `src` now, replacing the current track and dropping any preload.
-    /// Events for it carry `token`.
-    pub fn play(&self, src: Source, token: u64) {
-        self.shared.paused.store(false, Ordering::SeqCst);
-        self.shared.set_status(PlayStatus::Playing);
-        self.send(Cmd::Play(src, token));
-    }
-
-    /// Queue `src` to follow the current track gaplessly (replacing an earlier
-    /// preload). Produces `Ended{current}` then `Started{token}` at the switch.
-    /// With nothing playing, behaves like [`Engine::play`].
-    pub fn preload(&self, src: Source, token: u64) {
-        self.send(Cmd::Preload(src, token));
-    }
-
-    pub fn pause(&self) {
-        if self.shared.status() == PlayStatus::Playing {
-            self.shared.paused.store(true, Ordering::SeqCst);
-            self.shared.set_status(PlayStatus::Paused);
-            self.send(Cmd::Sync);
-        }
-    }
-
-    pub fn resume(&self) {
-        if self.shared.status() == PlayStatus::Paused {
-            self.shared.paused.store(false, Ordering::SeqCst);
-            self.shared.set_status(PlayStatus::Playing);
-            self.send(Cmd::Sync);
-        }
-    }
-
-    pub fn stop(&self) {
-        self.shared.paused.store(false, Ordering::SeqCst);
-        self.shared.set_status(PlayStatus::Stopped);
-        self.send(Cmd::Stop);
-    }
-
-    /// Seek the current track. Errors when nothing plays or the stream is live.
-    /// The position reads as `pos` immediately; audio follows once decoded.
-    pub fn seek(&self, pos: Duration) -> anyhow::Result<()> {
-        if self.shared.status() == PlayStatus::Stopped {
-            bail!("nothing is playing");
-        }
-        if !self.shared.cur_seekable.load(Ordering::Relaxed) {
-            bail!("this stream is not seekable");
-        }
-        let ms = u64::try_from(pos.as_millis()).unwrap_or(u64::MAX);
-        self.shared.seek_target_ms.store(ms, Ordering::Relaxed);
-        let generation = self.shared.seek_req.fetch_add(1, Ordering::AcqRel) + 1;
-        self.send(Cmd::Seek { ms, generation });
-        Ok(())
-    }
-
-    /// Position of the audio being sent to the device.
-    pub fn position(&self) -> Duration {
-        let sh = &self.shared;
-        if sh.status() == PlayStatus::Stopped {
-            return Duration::ZERO;
-        }
-        if sh.seek_req.load(Ordering::Acquire) != sh.seek_done.load(Ordering::Acquire) {
-            return Duration::from_millis(sh.seek_target_ms.load(Ordering::Relaxed));
-        }
-        let rate = u64::from(sh.out_rate.load(Ordering::Relaxed).max(1));
-        let frames = sh.pos_frames.load(Ordering::Relaxed);
-        Duration::from_secs(frames / rate)
-            + Duration::from_nanos((frames % rate) * 1_000_000_000 / rate)
-    }
-
-    pub fn status(&self) -> PlayStatus {
-        self.shared.status()
-    }
-
-    /// 0.0..=1.0 slider position; mapped through a perceptual (cubic) curve.
-    pub fn set_volume(&self, v: f32) {
-        self.shared.params.set_volume(v);
-    }
-
-    /// -1.0 (left) ..= 1.0 (right).
-    pub fn set_balance(&self, b: f32) {
-        self.shared.params.set_balance(b);
-    }
-
-    pub fn set_eq(&self, eq: EqSettings) {
-        self.shared.params.set_eq(&eq);
-    }
-
-    pub fn set_replaygain(&self, m: ReplayGainMode) {
-        self.shared.params.set_replaygain(m);
-    }
-}
-
-impl Drop for Engine {
-    fn drop(&mut self) {
-        self.send(Cmd::Shutdown);
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
-        }
+        Err(_) => Err(anyhow!("audio engine thread exited during startup")),
     }
 }
 
@@ -664,6 +534,7 @@ mod tests {
     use super::*;
     use crate::audio::decode::tests::wav_bytes;
     use crate::audio::http::test_server::{serve, Route};
+    use crate::audio::Engine;
     use std::path::PathBuf;
     use std::sync::mpsc::RecvTimeoutError;
 

@@ -15,20 +15,34 @@ const PHASES: usize = 512;
 /// a flat passband to ~18 kHz for 44.1 ↔ 48 kHz.
 pub struct Resampler {
     channels: usize,
-    /// Input frames advanced per output frame.
-    step: f64,
-    /// Position of the next output frame, in input frames relative to `hist`.
-    pos: f64,
+    /// Step of `in/out` input frames per output frame as an exact fraction
+    /// (`step_int + step_num / den`), so output never depends on chunking.
+    step_int: usize,
+    step_num: u64,
+    den: u64,
+    /// Next output frame position in `hist`: frame `base` + `num / den`.
+    base: usize,
+    num: u64,
     hist: Vec<f32>,
     /// Kernel sampled at x = i / PHASES for i in 0..=HALF_TAPS * PHASES.
     table: Vec<f32>,
 }
 
+fn gcd(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
+}
+
 impl Resampler {
     pub fn new(in_rate: u32, out_rate: u32, channels: usize) -> Self {
         let channels = channels.max(1);
-        let in_rate = f64::from(in_rate.max(1));
-        let out_rate = f64::from(out_rate.max(1));
+        let (in_r, out_r) = (u64::from(in_rate.max(1)), u64::from(out_rate.max(1)));
+        let g = gcd(in_r, out_r);
+        let (step, den) = (in_r / g, out_r / g);
+        let in_rate = in_r as f64;
+        let out_rate = out_r as f64;
         let ratio = (out_rate / in_rate).min(1.0);
         // Blackman transition width ≈ 5.5 / N cycles per sample for N taps.
         let transition = 5.5 / (2 * HALF_TAPS) as f64;
@@ -49,8 +63,11 @@ impl Resampler {
             .collect();
         let mut r = Self {
             channels,
-            step: in_rate / out_rate,
-            pos: 0.0,
+            step_int: (step / den) as usize,
+            step_num: step % den,
+            den,
+            base: 0,
+            num: 0,
             hist: Vec::new(),
             table,
         };
@@ -63,7 +80,8 @@ impl Resampler {
         self.hist.clear();
         // Prime with zeros so the first output frame lines up with input frame 0.
         self.hist.resize((HALF_TAPS - 1) * self.channels, 0.0);
-        self.pos = (HALF_TAPS - 1) as f64;
+        self.base = HALF_TAPS - 1;
+        self.num = 0;
     }
 
     #[inline]
@@ -85,12 +103,11 @@ impl Resampler {
         self.hist.extend_from_slice(input);
         let frames = self.hist.len() / ch;
         loop {
-            let base = self.pos.floor();
-            let b = base as usize;
+            let b = self.base;
             if b + HALF_TAPS >= frames {
                 break;
             }
-            let frac = self.pos - base;
+            let frac = self.num as f64 / self.den as f64;
             // Taps k = b - HALF_TAPS + 1 ..= b + HALF_TAPS; distance pos - k.
             let mut weights = [0.0f32; 2 * HALF_TAPS];
             let mut wsum = 0.0f32;
@@ -107,14 +124,18 @@ impl Resampler {
                 }
                 out.push(acc * norm);
             }
-            self.pos += self.step;
+            self.base += self.step_int;
+            self.num += self.step_num;
+            if self.num >= self.den {
+                self.num -= self.den;
+                self.base += 1;
+            }
         }
         // Drop input frames no output will need again.
-        let keep_from = (self.pos.floor() as usize + 1).saturating_sub(HALF_TAPS);
-        if keep_from > 0 {
-            let keep_from = keep_from.min(frames);
-            self.hist.drain(..keep_from * ch);
-            self.pos -= keep_from as f64;
+        let drop = (self.base + 1).saturating_sub(HALF_TAPS).min(frames);
+        if drop > 0 {
+            self.hist.drain(..drop * ch);
+            self.base -= drop;
         }
     }
 
