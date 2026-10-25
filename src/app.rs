@@ -8,15 +8,20 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use ratatui::layout::{Position, Rect};
 use ratatui::widgets::ListState;
 
+use crate::browse::{BrowseOutcome, Browser};
 use crate::command::Command;
 use crate::config::Config;
 use crate::install::{Dep, Deps};
-use crate::media::{MediaItem, SourceKind};
+use crate::media::MediaItem;
+use crate::providers::lyrics::Lyrics;
+use crate::providers::ProviderKind;
 use crate::queue::Queue;
 use crate::skin::WinampSkin;
 use crate::theme::Theme;
-use crate::ui::skin_layout::SkinLayout;
 use crate::view::{EqSettings, PlayStatus, PlayerView, StreamFormat};
+use crate::vis::analyzer::{Analyzer, AnalyzerConfig};
+use crate::vis::palette::VisPalette;
+use crate::vis::VisMode;
 
 /// How long informational status messages stay visible.
 const INFO_TTL: Duration = Duration::from_secs(4);
@@ -40,6 +45,41 @@ pub enum InputPurpose {
     SavePlaylist,
     /// File, directory, playlist or URL to play (Winamp "eject").
     Open,
+    /// Search inside the active provider tab.
+    ProviderSearch,
+}
+
+/// A source tab in the library view (cycled with Tab).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    Local,
+    /// yt-dlp search.
+    Online,
+    Provider(ProviderKind),
+}
+
+impl Tab {
+    pub fn label(self) -> &'static str {
+        match self {
+            Tab::Local => "Local",
+            Tab::Online => "Online",
+            Tab::Provider(ProviderKind::Radio) => "Radio",
+            Tab::Provider(ProviderKind::Podcast) => "Podcasts",
+            Tab::Provider(ProviderKind::Subsonic) => "Subsonic",
+            Tab::Provider(ProviderKind::Jellyfin) => "Jellyfin",
+        }
+    }
+}
+
+/// Lyrics of the playing track.
+#[derive(Debug, Clone)]
+pub enum LyricsStatus {
+    /// Nothing playing (or panel never needed).
+    Idle,
+    Loading,
+    NotFound,
+    Error(String),
+    Ready(Lyrics),
 }
 
 #[derive(Debug, Clone)]
@@ -57,9 +97,10 @@ pub enum Status {
 #[derive(Debug, Clone)]
 pub struct PlaybackState {
     pub title: String,
-    pub duration_secs: u64,
-    pub elapsed_secs: u64,
+    pub duration: Option<Duration>,
+    pub elapsed: Duration,
     pub paused: bool,
+    pub format: StreamFormat,
 }
 
 /// Layout rects for mouse hit-testing (written by the renderers).
@@ -79,6 +120,7 @@ pub struct LayoutRects {
 pub enum MouseAction {
     None,
     Cmd(Command),
+    Browse(BrowseOutcome),
     PlayResult(usize),
     PrevPage,
     NextPage,
@@ -142,7 +184,10 @@ pub enum BrowseAction {
     NextPage,
     PrevPage,
     OpenSettings,
-    SwitchSource,
+    /// Next (`true`) or previous source tab.
+    SwitchTab(bool),
+    /// Something happened in a provider tab's browser.
+    Browse(BrowseOutcome),
     Download(String, String), // id, title
 }
 
@@ -188,10 +233,15 @@ pub struct App {
     pub config: Config,
     pub theme: Theme,
     pub winamp_skin: Option<WinampSkin>,
-    pub skin_layout: Option<SkinLayout>,
     /// File of the loaded skin (`None` = built-in colours).
     pub skin_path: Option<PathBuf>,
-    pub active_source: SourceKind,
+    pub tab: Tab,
+    /// Tabs in cycling order: Local, Online, then enabled providers.
+    pub tabs: Vec<Tab>,
+    /// One browser per provider tab.
+    pub browsers: Vec<Browser>,
+    /// Prompt text for `InputPurpose::ProviderSearch`.
+    pub prompt_label: &'static str,
     pub onboarding_step: OnboardingStep,
     pub onboarding_dep_selected: usize,
     pub pending_install: Option<Dep>,
@@ -219,7 +269,18 @@ pub struct App {
     pub balance: f32,
     pub eq: EqSettings,
     pub show_eq: bool,
+    /// Focused EQ panel slider (0 = preamp, 1..=10 = bands).
+    pub eq_focus: usize,
     pub show_playlist: bool,
+    pub show_lyrics: bool,
+    pub lyrics: LyricsStatus,
+    pub vis_mode: VisMode,
+    pub analyzer: Analyzer,
+    pub vis_palette: VisPalette,
+    /// Width and mode the analyzer bands were last sized for.
+    vis_fit: (u16, VisMode),
+    /// The analyzer uses the Winamp configuration.
+    analyzer_winamp: bool,
     pub deps: Deps,
 }
 
@@ -234,6 +295,21 @@ pub fn display_title(item: &MediaItem) -> String {
 impl App {
     pub fn new(config: Config) -> Self {
         let theme = Theme::from_name(&config.theme);
+        let mut tabs = vec![Tab::Local, Tab::Online];
+        tabs.extend(config.providers.enabled().into_iter().map(Tab::Provider));
+        let browsers = tabs
+            .iter()
+            .filter_map(|tab| match tab {
+                Tab::Provider(kind) => Some(Browser::new(*kind)),
+                _ => None,
+            })
+            .collect();
+        let analyzer_winamp = theme.name == "Winamp";
+        let analyzer = Analyzer::new(if analyzer_winamp {
+            AnalyzerConfig::winamp()
+        } else {
+            AnalyzerConfig::default()
+        });
         let mut list_state = ListState::default();
         list_state.select(Some(0));
         let mut skin_list_state = ListState::default();
@@ -262,9 +338,11 @@ impl App {
             config,
             theme,
             winamp_skin: None,
-            skin_layout: None,
             skin_path: None,
-            active_source: SourceKind::Local,
+            tab: Tab::Local,
+            tabs,
+            browsers,
+            prompt_label: "Search",
             onboarding_step: OnboardingStep::Welcome,
             onboarding_dep_selected: 0,
             pending_install: None,
@@ -288,9 +366,64 @@ impl App {
             balance: 0.0,
             eq: EqSettings::default(),
             show_eq: false,
+            eq_focus: 0,
             show_playlist: false,
+            show_lyrics: false,
+            lyrics: LyricsStatus::Idle,
+            vis_mode: VisMode::default(),
+            analyzer,
+            vis_palette: VisPalette::default(),
+            vis_fit: (0, VisMode::None),
+            analyzer_winamp,
             deps: Deps::default(),
         }
+    }
+
+    pub fn is_winamp(&self) -> bool {
+        self.theme.name == "Winamp"
+    }
+
+    /// Use the Winamp analyzer (19 bars, 75-point scope) for the skin and
+    /// the width-fitted one for the other themes. Call after theme changes.
+    pub fn sync_analyzer(&mut self) {
+        let winamp = self.is_winamp();
+        if winamp == self.analyzer_winamp {
+            return;
+        }
+        self.analyzer_winamp = winamp;
+        self.analyzer = Analyzer::new(if winamp {
+            AnalyzerConfig::winamp()
+        } else {
+            AnalyzerConfig::default()
+        });
+        self.vis_fit = (0, VisMode::None);
+    }
+
+    /// Size the analyzer for a visualizer strip `width` cells wide.
+    pub fn fit_vis(&mut self, width: u16) {
+        if self.vis_fit == (width, self.vis_mode) {
+            return;
+        }
+        self.vis_fit = (width, self.vis_mode);
+        let bands = self.vis_mode.bands_for_width(width);
+        if bands > 0 {
+            self.analyzer.set_bands(bands);
+        }
+        if self.vis_mode == VisMode::Scope {
+            self.analyzer.set_scope_len(usize::from(width) * 2);
+        }
+    }
+
+    /// The browser of the active provider tab.
+    pub fn browser_mut(&mut self) -> Option<&mut Browser> {
+        let Tab::Provider(kind) = self.tab else {
+            return None;
+        };
+        self.browsers.iter_mut().find(|b| b.kind == kind)
+    }
+
+    pub fn browser_for(&mut self, kind: ProviderKind) -> Option<&mut Browser> {
+        self.browsers.iter_mut().find(|b| b.kind == kind)
     }
 
     // ── status ───────────────────────────────────────────────────────────
@@ -340,16 +473,13 @@ impl App {
     /// Snapshot for renderers (TUI themes and the Winamp skin compositor).
     pub fn player_view(&self) -> PlayerView<'_> {
         let current = self.queue.current();
-        let (title, elapsed, duration) = match &self.playback {
-            Some(pb) => (
-                pb.title.as_str(),
-                Duration::from_secs(pb.elapsed_secs),
-                (pb.duration_secs > 0).then(|| Duration::from_secs(pb.duration_secs)),
-            ),
+        let (title, elapsed, duration, format) = match &self.playback {
+            Some(pb) => (pb.title.as_str(), pb.elapsed, pb.duration, pb.format),
             None => (
                 current.map_or("", |i| i.title.as_str()),
                 Duration::ZERO,
                 current.and_then(|i| i.duration).map(Duration::from_secs),
+                StreamFormat::default(),
             ),
         };
         PlayerView {
@@ -362,9 +492,9 @@ impl App {
             shuffle: self.queue.shuffle(),
             repeat: self.queue.repeat(),
             eq: self.eq,
-            format: StreamFormat::default(),
-            spectrum: &[],
-            scope: &[],
+            format,
+            spectrum: self.analyzer.spectrum(),
+            scope: self.analyzer.scope(),
             playlist: self.queue.items(),
             current: self.queue.current_index(),
             selected: self.queue.cursor(),
@@ -472,6 +602,8 @@ impl App {
             KeyCode::Char('e') => Command::ToggleEqWindow,
             KeyCode::Char('P') => Command::TogglePlaylistWindow,
             KeyCode::Char('l') => Command::Eject,
+            KeyCode::Char('V') => Command::CycleVis,
+            KeyCode::Char('y') => Command::ToggleLyrics,
             _ => return None,
         })
     }
@@ -483,11 +615,24 @@ impl App {
                 _ => BrowseAction::None,
             };
         }
+        if self.show_eq && !self.is_winamp() {
+            let before = self.eq_focus;
+            if let Some(cmd) = crate::ui::eq_key(&key, &mut self.eq_focus, &self.eq) {
+                return BrowseAction::Cmd(cmd);
+            }
+            if self.eq_focus != before {
+                return BrowseAction::None;
+            }
+            if key.code == KeyCode::Esc {
+                return BrowseAction::Cmd(Command::ToggleEqWindow);
+            }
+        }
         if let Some(cmd) = Self::transport_command(&key) {
             return BrowseAction::Cmd(cmd);
         }
+        let provider_tab = matches!(self.tab, Tab::Provider(_)) && !self.show_playlist;
         match key.code {
-            KeyCode::Char('/') => {
+            KeyCode::Char('/') if !provider_tab => {
                 self.open_prompt(InputPurpose::Search);
                 BrowseAction::None
             }
@@ -496,8 +641,16 @@ impl App {
                 BrowseAction::None
             }
             KeyCode::Char('s') => BrowseAction::OpenSettings,
-            KeyCode::Tab => BrowseAction::SwitchSource,
+            KeyCode::Tab => BrowseAction::SwitchTab(true),
+            KeyCode::BackTab => BrowseAction::SwitchTab(false),
             _ if self.show_playlist => self.playlist_key(key),
+            _ if provider_tab => {
+                let subs = self.config.providers.podcast.subscriptions.clone();
+                match self.browser_mut() {
+                    Some(browser) => BrowseAction::Browse(browser.handle_key(&key, &subs)),
+                    None => BrowseAction::None,
+                }
+            }
             _ => self.results_key(key),
         }
     }
@@ -532,7 +685,7 @@ impl App {
     }
 
     fn results_key(&mut self, key: KeyEvent) -> BrowseAction {
-        let online = matches!(self.active_source, SourceKind::Extractor(_));
+        let online = self.tab == Tab::Online;
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 self.select_next();
@@ -702,9 +855,8 @@ impl App {
                     .unwrap_or(0);
                 self.theme = builtins[(current_idx + 1) % builtins.len()].clone();
                 self.config.theme = self.theme.name.clone();
-                if self.theme.name != "Winamp" {
+                if !self.is_winamp() {
                     self.winamp_skin = None;
-                    self.skin_layout = None;
                 }
                 SettingsAction::ThemeChanged
             }
@@ -931,6 +1083,10 @@ impl App {
                     };
                     return MouseAction::Cmd(Command::Select(next));
                 }
+                if let Some(browser) = self.browser_mut() {
+                    browser.scroll(down);
+                    return MouseAction::None;
+                }
                 if down {
                     self.select_next();
                 } else {
@@ -958,6 +1114,23 @@ impl App {
                             _ => MouseAction::None,
                         };
                     }
+                    if matches!(self.tab, Tab::Provider(_)) {
+                        let subs = self.config.providers.podcast.subscriptions.clone();
+                        let rows = self.layout_rects.results;
+                        let Some(browser) = self.browser_mut() else {
+                            return MouseAction::None;
+                        };
+                        let top = rows.y + 1;
+                        let bottom = rows.y + rows.height.saturating_sub(1);
+                        if !(top..bottom).contains(&event.row) {
+                            return MouseAction::None;
+                        }
+                        let i = browser.offset() + usize::from(event.row - top);
+                        if i >= browser.len() {
+                            return MouseAction::None;
+                        }
+                        return MouseAction::Browse(browser.activate(i, &subs));
+                    }
                     return match self.list_row(event.row, self.list_state.offset()) {
                         Some(i) if i < self.results.len() => {
                             self.list_state.select(Some(i));
@@ -981,6 +1154,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::media::SourceKind;
     use crate::view::RepeatMode;
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -1039,6 +1213,8 @@ mod tests {
             (key(KeyCode::Char('e')), Command::ToggleEqWindow),
             (shift(KeyCode::Char('P')), Command::TogglePlaylistWindow),
             (key(KeyCode::Char('l')), Command::Eject),
+            (shift(KeyCode::Char('V')), Command::CycleVis),
+            (key(KeyCode::Char('y')), Command::ToggleLyrics),
             (key(KeyCode::Char('q')), Command::Quit),
             (
                 KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
@@ -1080,7 +1256,7 @@ mod tests {
             a.handle_browse_key(key(KeyCode::Char('n'))),
             BrowseAction::None
         ));
-        a.active_source = SourceKind::Extractor("ytdlp".into());
+        a.tab = Tab::Online;
         assert!(matches!(
             a.handle_browse_key(key(KeyCode::Char('n'))),
             BrowseAction::NextPage
@@ -1174,13 +1350,14 @@ mod tests {
         assert_eq!(v.playlist.len(), 3);
         assert_eq!(v.repeat, RepeatMode::All);
         assert_eq!(v.volume, 0.5);
-        assert!(v.spectrum.is_empty() && v.scope.is_empty());
+        assert!(v.spectrum.iter().all(|&b| b == 0.0), "silent analyzer");
 
         a.playback = Some(PlaybackState {
             title: display_title(&item(0)),
-            duration_secs: 0,
-            elapsed_secs: 7,
+            duration: None,
+            elapsed: Duration::from_secs(7),
             paused: true,
+            format: StreamFormat::default(),
         });
         let v = a.player_view();
         assert_eq!(v.status, PlayStatus::Paused);
@@ -1223,9 +1400,10 @@ mod tests {
         assert!(matches!(a.handle_mouse(click(5, 0)), MouseAction::None));
         a.playback = Some(PlaybackState {
             title: String::new(),
-            duration_secs: 100,
-            elapsed_secs: 0,
+            duration: Some(Duration::from_secs(100)),
+            elapsed: Duration::ZERO,
             paused: false,
+            format: StreamFormat::default(),
         });
         match a.handle_mouse(click(25, 20)) {
             MouseAction::Cmd(Command::SeekFrac(f)) => assert!((f - 0.25).abs() < 1e-6),
@@ -1242,5 +1420,52 @@ mod tests {
         assert_eq!(a.list_state.selected(), Some(0));
         a.list_state.select(Some(9));
         assert!(a.selected_result().is_none());
+    }
+
+    #[test]
+    fn tab_keys_and_eq_panel_capture() {
+        let mut a = app();
+        assert!(matches!(
+            a.handle_browse_key(key(KeyCode::Tab)),
+            BrowseAction::SwitchTab(true)
+        ));
+        assert!(matches!(
+            a.handle_browse_key(key(KeyCode::BackTab)),
+            BrowseAction::SwitchTab(false)
+        ));
+        assert_eq!(a.tabs[..2], [Tab::Local, Tab::Online]);
+        assert!(a.tabs.contains(&Tab::Provider(ProviderKind::Radio)));
+        assert!(!a.tabs.contains(&Tab::Provider(ProviderKind::Subsonic)));
+
+        a.show_eq = true;
+        // Arrows move the EQ focus instead of seeking.
+        assert!(matches!(
+            a.handle_browse_key(key(KeyCode::Right)),
+            BrowseAction::None
+        ));
+        assert_eq!(a.eq_focus, 1);
+        assert_eq!(
+            cmd(a.handle_browse_key(key(KeyCode::Up))),
+            Some(Command::SetEqBand { band: 0, db: 1.0 })
+        );
+        assert_eq!(
+            cmd(a.handle_browse_key(key(KeyCode::Esc))),
+            Some(Command::ToggleEqWindow)
+        );
+        // Transport keys still work with the panel open.
+        assert_eq!(
+            cmd(a.handle_browse_key(key(KeyCode::Char('b')))),
+            Some(Command::Next)
+        );
+    }
+
+    #[test]
+    fn analyzer_follows_theme_and_width() {
+        let mut a = app();
+        a.fit_vis(40);
+        assert_eq!(a.analyzer.bands(), VisMode::Bars.bands_for_width(40));
+        a.theme = Theme::from_name("Winamp");
+        a.sync_analyzer();
+        assert_eq!(a.analyzer.bands(), AnalyzerConfig::winamp().bands);
     }
 }

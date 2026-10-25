@@ -1,5 +1,6 @@
 mod app;
 mod audio;
+mod browse;
 mod cli;
 mod command;
 mod config;
@@ -16,6 +17,7 @@ mod playback;
 mod playlist_io;
 mod providers;
 mod queue;
+mod report;
 mod skin;
 mod state;
 mod tap;
@@ -33,7 +35,10 @@ use anyhow::Result;
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 
 use cli::Cli;
+use config::Config;
 use controller::Controller;
+use gfx::GfxPainter;
+use playback::Playback;
 use state::SessionState;
 use term_input::InputThread;
 
@@ -84,9 +89,24 @@ fn restore_terminal() {
     ratatui::restore();
 }
 
+/// Pick the graphics protocol for Winamp skins. With `graphics = "auto"`
+/// and the Winamp theme active, ask the terminal (needs raw mode and must
+/// run before the input thread starts).
+fn graphics_painter(config: &Config, winamp: bool) -> GfxPainter {
+    let protocol = gfx::detect(&config.graphics);
+    let auto = matches!(config.graphics.trim(), "" | "auto");
+    if !(auto && winamp) {
+        return GfxPainter::new(protocol);
+    }
+    let probe = gfx::probe(Duration::from_millis(150));
+    let cell = probe.cell.or_else(gfx::query_cell_size);
+    GfxPainter::with_cell_size(probe.protocol(protocol), cell)
+}
+
 fn run_tui(inputs: Vec<String>) -> Result<()> {
-    let (config, config_warning) = config::Config::load();
+    let (config, config_warning) = Config::load();
     let (state, state_warning) = SessionState::load(&config::state_path());
+    let winamp = state.theme.as_deref().unwrap_or(&config.theme) == "Winamp";
     let rt = runtime()?;
 
     let default_panic = std::panic::take_hook();
@@ -97,15 +117,19 @@ fn run_tui(inputs: Vec<String>) -> Result<()> {
 
     let result = rt.block_on(async move {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut ctl = Controller::new(config, state, tx.clone());
-        if let Some(warning) = config_warning.or(state_warning) {
-            ctl.app.error(warning);
-        }
+        // Open the audio device before the TUI owns the screen: some audio
+        // stacks print diagnostics while probing devices.
+        let playback = Playback::new(tx.clone());
 
         let terminal = ratatui::init();
         if let Err(e) = crossterm::execute!(std::io::stdout(), EnableMouseCapture) {
             restore_terminal();
             return Err(e.into());
+        }
+        let painter = graphics_painter(&config, winamp);
+        let mut ctl = Controller::new(config, state, tx.clone(), playback, painter);
+        if let Some(warning) = config_warning.or(state_warning) {
+            ctl.app.error(warning);
         }
         let input = match InputThread::spawn(tx) {
             Ok(input) => input,

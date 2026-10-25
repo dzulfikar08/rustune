@@ -4,10 +4,12 @@ use anyhow::Result;
 
 use crate::app::SkinEntry;
 use crate::audio::EngineEvent;
+use crate::browse::Entry;
 use crate::install::Deps;
 use crate::media::{MediaItem, StreamInfo};
 use crate::net::SkinPage;
 use crate::providers::lyrics::Lyrics;
+use crate::providers::ProviderKind;
 use crate::skin::WinampSkin;
 
 /// Everything the controller reacts to: terminal input (from the input
@@ -30,6 +32,12 @@ pub enum AppEvent {
     LyricsReady {
         key: String,
         result: Result<Option<Lyrics>, String>,
+    },
+    /// A provider browser level finished loading.
+    BrowseLoaded {
+        kind: ProviderKind,
+        token: u64,
+        result: crate::providers::Result<Vec<Entry>>,
     },
     DepsProbed(Deps),
     ScanComplete(Result<Vec<MediaItem>>),

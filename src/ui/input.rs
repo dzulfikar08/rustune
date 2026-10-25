@@ -9,10 +9,15 @@ use crate::app::{App, InputPurpose, Mode};
 pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     let theme = &app.theme;
 
-    let prompt = match (&app.mode, app.input_purpose) {
+    let custom;
+    let prompt: &str = match (&app.mode, app.input_purpose) {
         (Mode::Input, InputPurpose::Search) => " / ",
         (Mode::Input, InputPurpose::SavePlaylist) => " save as: ",
         (Mode::Input, InputPurpose::Open) => " open: ",
+        (Mode::Input, InputPurpose::ProviderSearch) => {
+            custom = format!(" {}: ", app.prompt_label);
+            &custom
+        }
         (Mode::Browse, _) => " > ",
         (Mode::Settings, _) => " S ",
         (Mode::Onboarding, _) => " ? ",

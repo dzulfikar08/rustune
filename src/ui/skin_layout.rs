@@ -1,31 +1,11 @@
 //! Classic stacked window layout (main, equalizer, playlist) fitted to a
-//! terminal area, plus the per-skin render state the legacy
-//! `winamp::render(frame, app)` entry keeps in `App::skin_layout`.
+//! terminal area.
 
 use ratatui::layout::Rect;
 
-use crate::gfx::{GfxPainter, Protocol};
-use crate::skin::WinampSkin;
 use crate::winamp::compose::playlist_height;
-use crate::winamp::sprites::{Px, PL_BOTTOM_H, PL_ROW_STEP, PL_TOP_H, WINDOW_H, WINDOW_W};
-use crate::winamp::{WinampUiState, Window};
-
-/// Render state for the legacy entry point. The legacy main loop never
-/// flushes images, so its painter is pinned to half-block output.
-pub struct SkinLayout {
-    pub ui: WinampUiState,
-    pub painter: GfxPainter,
-}
-
-impl SkinLayout {
-    /// `None` when the skin has no MAIN.BMP (text layout only).
-    pub fn from_skin(skin: &WinampSkin) -> Option<Self> {
-        skin.has_bitmaps().then(|| Self {
-            ui: WinampUiState::new(),
-            painter: GfxPainter::with_cell_size(Protocol::HalfBlock, None),
-        })
-    }
-}
+use crate::winamp::sprites::{PL_BOTTOM_H, PL_ROW_STEP, PL_TOP_H, WINDOW_H, WINDOW_W};
+use crate::winamp::Window;
 
 /// One window placed on screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,20 +27,6 @@ pub struct Plan {
     pub main: WindowPlan,
     pub eq: Option<WindowPlan>,
     pub playlist: Option<WindowPlan>,
-}
-
-impl Plan {
-    /// Cells covered by window pixel rect `r` of `w`.
-    pub fn cells_of(&self, w: &WindowPlan, r: Px) -> Rect {
-        let (cw, ch) = (i64::from(self.cell.0), i64::from(self.cell.1));
-        let s = i64::from(self.scale);
-        let x0 = i64::from(w.at.0) + i64::from(r.x) * s / cw;
-        let y0 = i64::from(w.at.1) + i64::from(r.y) * s / ch;
-        let x1 = i64::from(w.at.0) + ((i64::from(r.x) + i64::from(r.w)) * s + cw - 1) / cw;
-        let y1 = i64::from(w.at.1) + ((i64::from(r.y) + i64::from(r.h)) * s + ch - 1) / ch;
-        let clamp = |v: i64| v.clamp(0, i64::from(u16::MAX)) as u16;
-        Rect::new(clamp(x0), clamp(y0), clamp(x1 - x0), clamp(y1 - y0)).intersection(w.cells)
-    }
 }
 
 const MAX_SCALE: u32 = 8;
@@ -165,23 +131,5 @@ mod tests {
         // 24 rows × 20 px / 3 = 160 px → 3 segments → 145 px.
         assert_eq!(pl.height_px, 145);
         assert_eq!(pl.cells.height, 22);
-    }
-
-    #[test]
-    fn cells_of_maps_window_pixels() {
-        let p = plan(Rect::new(0, 0, 200, 60), (10, 20), 3, false, false).unwrap();
-        assert_eq!(p.scale, 3);
-        // Play button (39,88,23,18) at scale 3 → x 117..186 → cols 11..19.
-        let r = p.cells_of(
-            &p.main,
-            Px {
-                x: 39,
-                y: 88,
-                w: 23,
-                h: 18,
-            },
-        );
-        assert_eq!(r.x, p.main.at.0 + 11);
-        assert_eq!(r.width, 8);
     }
 }

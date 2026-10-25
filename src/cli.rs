@@ -156,7 +156,12 @@ pub async fn doctor() {
         println!("  [--] music dir: {} (not found)", cfg.music_dir.display());
     }
     let mut sources = vec!["Local", "Online"];
-    sources.extend(cfg.providers.enabled().into_iter().map(|k| k.display_name()));
+    sources.extend(
+        cfg.providers
+            .enabled()
+            .into_iter()
+            .map(|k| k.display_name()),
+    );
     println!("  [ok] sources: {}", sources.join(", "));
 
     println!("\nPlayback needs no external tools. Run 'rustune' to start.");

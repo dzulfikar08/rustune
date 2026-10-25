@@ -48,5 +48,8 @@ pub enum Command {
     Eject,
     ToggleEqWindow,
     TogglePlaylistWindow,
+    /// Next visualizer mode.
+    CycleVis,
+    ToggleLyrics,
     Quit,
 }

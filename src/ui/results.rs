@@ -6,8 +6,8 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, Status};
-use crate::media::{MediaItem, SourceKind};
+use crate::app::{App, Status, Tab};
+use crate::media::MediaItem;
 use crate::theme::Theme;
 
 /// Keep `selected` visible in a list of `len` rows shown `height` at a time;
@@ -66,10 +66,10 @@ fn render_list(
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let theme = &app.theme;
 
-    let source_label = match &app.active_source {
-        SourceKind::Local => "Local Music",
-        SourceKind::Extractor(name) => name.as_str(),
-        SourceKind::Url => "Online",
+    let source_label = match app.tab {
+        Tab::Local => "Local Music",
+        Tab::Online => "Online (yt-dlp)",
+        Tab::Provider(kind) => kind.display_name(),
     };
     let title = if app.page > 0 {
         format!(" {source_label} (page {}) ", app.page + 1)
@@ -84,11 +84,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             Status::Downloading(text) => (text.as_str(), theme.loading_text),
             Status::Error(text) => (text.as_str(), theme.error_text),
             _ => {
-                let msg = match (&app.active_source, app.input_history.is_empty()) {
-                    (SourceKind::Local, true) => {
-                        "No music files found. Press Tab to switch to online search."
+                let msg = match (app.tab, app.input_history.is_empty()) {
+                    (Tab::Local, true) => {
+                        "No music files found. Press Tab for online search, radio and podcasts."
                     }
-                    (SourceKind::Extractor(_) | SourceKind::Url, true) => "Press / to search",
+                    (_, true) => "Press / to search",
                     (_, false) => "No results found.",
                 };
                 (msg, theme.empty_text)

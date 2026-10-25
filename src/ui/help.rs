@@ -4,8 +4,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, InputPurpose, Mode};
-use crate::media::SourceKind;
+use crate::app::{App, InputPurpose, Mode, Tab};
 
 /// Key hints for the current mode, as (key, description) pairs.
 fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
@@ -20,22 +19,37 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ("P", "library"),
             ("q", "quit"),
         ],
+        Mode::Browse if app.show_eq => vec![
+            ("←/→", "band"),
+            ("↑/↓", "±1 dB"),
+            ("0", "reset"),
+            ("o", "on/off"),
+            ("[ ]", "preset"),
+            ("e", "close"),
+            ("q", "quit"),
+        ],
         Mode::Browse => {
-            let mut v = vec![
-                ("/", "search"),
-                ("Enter", "play"),
-                ("a/A", "queue/next"),
-                ("z x c v b", "prev play pause stop next"),
+            let mut v = vec![("/", "search"), ("Enter", "play"), ("a/A", "queue/next")];
+            match app.tab {
+                Tab::Online => v.extend([("n/p", "page"), ("d", "download")]),
+                Tab::Provider(_) => v.extend([("⌫", "back"), ("r", "reload")]),
+                Tab::Local => {}
+            }
+            if app.tab == Tab::Provider(crate::providers::ProviderKind::Podcast) {
+                v.push(("f", "subscribe"));
+            }
+            v.extend([
+                ("z x c v b", "transport"),
                 ("←/→", "seek"),
                 ("+/-", "vol"),
-                ("S/R", "shuffle/repeat"),
                 ("P", "playlist"),
-            ];
-            if matches!(app.active_source, SourceKind::Extractor(_)) {
-                v.push(("n/p", "page"));
-                v.push(("d", "download"));
-            }
-            v.extend([("Tab", "source"), ("s", "settings"), ("q", "quit")]);
+                ("e", "EQ"),
+                ("y", "lyrics"),
+                ("V", "vis"),
+                ("Tab", "source"),
+                ("s", "settings"),
+                ("q", "quit"),
+            ]);
             v
         }
         Mode::Input => match app.input_purpose {
@@ -47,6 +61,7 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ],
             InputPurpose::SavePlaylist => vec![("Enter", "save playlist"), ("Esc", "cancel")],
             InputPurpose::Open => vec![("Enter", "play file/dir/URL/playlist"), ("Esc", "cancel")],
+            InputPurpose::ProviderSearch => vec![("Enter", "search"), ("Esc", "cancel")],
         },
         Mode::Settings => vec![("j/k", "navigate"), ("Enter", "change"), ("Esc", "back")],
         Mode::Onboarding => vec![("Enter", "next"), ("Esc", "skip")],

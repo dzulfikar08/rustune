@@ -25,6 +25,9 @@ pub struct Config {
     /// Loudness normalisation from ReplayGain tags: off, track or album.
     #[serde(default)]
     pub replaygain: ReplayGainMode,
+    /// Winamp skin output: auto, kitty, iterm2, sixel or halfblock.
+    #[serde(default = "default_graphics")]
+    pub graphics: String,
     /// Radio, podcasts, lyrics, Subsonic and Jellyfin (`[providers.*]`).
     #[serde(default)]
     pub providers: ProvidersConfig,
@@ -57,6 +60,10 @@ fn default_timeout() -> u64 {
 
 fn default_page_size() -> usize {
     30
+}
+
+fn default_graphics() -> String {
+    "auto".into()
 }
 
 /// `<config dir>/rustune` (e.g. `~/.config/rustune` on Linux).
@@ -155,6 +162,7 @@ impl Default for Config {
             search_timeout_secs: default_timeout(),
             page_size: default_page_size(),
             replaygain: ReplayGainMode::Off,
+            graphics: default_graphics(),
             providers: ProvidersConfig::default(),
         }
     }

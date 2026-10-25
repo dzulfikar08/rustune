@@ -10,15 +10,13 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::Frame;
 
-use crate::app::{App, LayoutRects, Mode, Status};
+use crate::app::{App, Mode, Status, Tab};
 use crate::gfx::{GfxPainter, Protocol};
-use crate::media::SourceKind;
 use crate::skin::{rgba_color, SkinColors, WinampSkin};
 use crate::ui::skin_bitmap::draw_halfblock;
 use crate::ui::skin_layout::{self, Plan, WindowPlan};
-use crate::view::{EqSettings, PlayStatus, PlayerView, RepeatMode, StreamFormat};
+use crate::view::{PlayStatus, PlayerView, RepeatMode};
 use crate::winamp::compose::{self, RowSpan};
-use crate::winamp::sprites::main_pos;
 use crate::winamp::vis::{self, BARS};
 use crate::winamp::{Element, Region, WinampUiState, WindowGeom};
 
@@ -27,10 +25,6 @@ use crate::winamp::{Element, Region, WinampUiState, WindowGeom};
 pub struct WinampRects {
     /// Playlist text rows.
     pub playlist: Rect,
-    /// Position (seek) bar.
-    pub seek: Rect,
-    /// Pause button.
-    pub pause: Rect,
 }
 
 /// Small fixed-capacity formatter so per-frame labels never allocate.
@@ -128,11 +122,7 @@ fn render_windows(
         ui.compose_eq(skin, view);
         put_window(buf, gfx, ui, &plan, eq, graphics);
     }
-    let mut rects = WinampRects {
-        playlist: Rect::default(),
-        seek: plan.cells_of(&plan.main, main_pos::POSITION),
-        pause: plan.cells_of(&plan.main, main_pos::PAUSE),
-    };
+    let mut rects = WinampRects::default();
     if let Some(pl) = plan.playlist.as_ref() {
         rects.playlist = render_playlist(buf, gfx, ui, skin, view, &plan, pl, graphics);
     }
@@ -494,7 +484,6 @@ fn render_text(
             element: Element::Position,
             cells: bar,
         });
-        rects.seek = bar;
     }
 
     // Transport + volume + balance.
@@ -524,9 +513,6 @@ fn render_text(
                 element: el,
                 cells: Rect::new(start, r, cx.saturating_sub(start), 1),
             });
-            if el == Element::Pause {
-                rects.pause = Rect::new(start, r, cx.saturating_sub(start), 1);
-            }
             cx += 1;
         }
         cx = put(buf, cx + 1, r, right, "VOL", body);
@@ -665,12 +651,18 @@ fn draw_text_track_row(
     put(buf, cx, y, end, &item.title, style);
 }
 
-// ─── Legacy entry point (until the app passes a PlayerView) ────────────
+// ─── Full screen ────────────────────────────────────────────────────────
 
-/// Compatibility adapter for the current `ui::draw`: builds a `PlayerView`
-/// from `App` fields and renders it (half-block or text), plus the
-/// search/help footer, and records `layout_rects` for the legacy mouse code.
-pub fn render(frame: &mut Frame, app: &mut App) {
+/// The Winamp theme's screen: the skin windows above a two-row footer
+/// (prompt and key hints). `skin` is `None` while the skin is still loading.
+pub fn draw(
+    frame: &mut Frame,
+    app: &App,
+    skin: Option<&WinampSkin>,
+    view: &PlayerView,
+    ui: &mut WinampUiState,
+    gfx: &mut GfxPainter,
+) {
     let area = frame.area();
     let footer_h = area.height.min(2);
     let body = Rect {
@@ -682,104 +674,45 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         height: footer_h,
         ..area
     };
-
-    let (title, status, elapsed, duration) = match app.playback.as_ref() {
-        Some(pb) => (
-            pb.title.as_str(),
-            if pb.paused {
-                PlayStatus::Paused
-            } else {
-                PlayStatus::Playing
-            },
-            std::time::Duration::from_secs(pb.elapsed_secs),
-            (pb.duration_secs > 0).then(|| std::time::Duration::from_secs(pb.duration_secs)),
-        ),
-        None => ("", PlayStatus::Stopped, std::time::Duration::ZERO, None),
-    };
-    let current = app
-        .playback
-        .as_ref()
-        .and_then(|pb| app.results.iter().position(|r| r.title == pb.title));
-    let view = PlayerView {
-        title,
-        status,
-        elapsed,
-        duration,
-        volume: 1.0,
-        balance: 0.0,
-        shuffle: false,
-        repeat: RepeatMode::Off,
-        eq: EqSettings::default(),
-        format: StreamFormat::default(),
-        spectrum: &[],
-        scope: &[],
-        playlist: &app.results,
-        current,
-        selected: app.list_state.selected().unwrap_or(0),
-    };
-
-    let rects = match (app.winamp_skin.as_ref(), app.skin_layout.as_mut()) {
-        (Some(skin), Some(layout)) => render_view(
-            frame,
-            body,
-            skin,
-            &view,
-            &mut layout.ui,
-            &mut layout.painter,
-        ),
-        (skin, _) => {
-            let sc = skin.map_or(&SkinColors::DEFAULT, |s| &s.colors);
-            let mut ui = WinampUiState::new();
-            render_text(frame.buffer_mut(), body, sc, &view, &mut ui)
+    let sc = skin.map_or(&SkinColors::DEFAULT, |s| &s.colors);
+    match skin {
+        Some(skin) => {
+            let rects = render_view(frame, body, skin, view, ui, gfx);
+            if view.playlist.is_empty() && !rects.playlist.is_empty() {
+                let msg = match &app.status {
+                    Status::Searching(t)
+                    | Status::Scanning(t)
+                    | Status::Downloading(t)
+                    | Status::Loading(t)
+                    | Status::Error(t) => t.as_str(),
+                    _ => "Queue is empty — press l to open files or s for the library",
+                };
+                let r = rects.playlist;
+                put(
+                    frame.buffer_mut(),
+                    r.x + 1,
+                    r.y,
+                    r.right(),
+                    msg,
+                    Style::default().fg(sc.plist_normal).bg(sc.plist_normal_bg),
+                );
+            }
         }
-    };
-
-    let sc = app
-        .winamp_skin
-        .as_ref()
-        .map_or(&SkinColors::DEFAULT, |s| &s.colors);
-    if app.results.is_empty() && !rects.playlist.is_empty() {
-        let msg = match &app.status {
-            Status::Searching(t)
-            | Status::Scanning(t)
-            | Status::Downloading(t)
-            | Status::Error(t) => t.as_str(),
-            _ => "No tracks loaded — press / to search",
-        };
-        let r = rects.playlist;
-        put(
-            frame.buffer_mut(),
-            r.x + 1,
-            r.y,
-            r.right(),
-            msg,
-            Style::default().fg(sc.plist_normal).bg(sc.plist_normal_bg),
-        );
+        None => {
+            let style = Style::default().fg(sc.text_fg).bg(sc.text_bg);
+            let buf = frame.buffer_mut();
+            fill(buf, body, style);
+            put(
+                buf,
+                body.x + 1,
+                body.y,
+                body.right(),
+                "Loading skin…",
+                style,
+            );
+        }
     }
     render_footer(frame.buffer_mut(), footer, app, sc);
-
-    // Legacy click mapping expects one header row above the results.
-    let pl = rects.playlist;
-    let results = if pl.is_empty() {
-        pl
-    } else {
-        Rect::new(pl.x, pl.y.saturating_sub(1), pl.width, pl.height + 1)
-    };
-    app.layout_rects = LayoutRects {
-        results,
-        player_info: Rect::new(body.x, body.y, body.width, body.height.min(1)),
-        player_bar: rects.seek,
-        input: Rect::new(footer.x, footer.y, footer.width, footer.height.min(1)),
-        help: Rect::new(
-            footer.x,
-            footer.y + 1,
-            footer.width,
-            footer.height.saturating_sub(1),
-        ),
-        pause_button: rects.pause,
-        prev_page: Rect::default(),
-        next_page: Rect::default(),
-    };
 }
 
 fn render_footer(buf: &mut Buffer, area: Rect, app: &App, sc: &SkinColors) {
@@ -814,23 +747,24 @@ fn render_footer(buf: &mut Buffer, area: Rect, app: &App, sc: &SkinColors) {
     let label = Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark);
     fill(buf, Rect::new(area.x, y, area.width, 1), label);
     let hints: &[(&str, &str)] = match app.mode {
-        Mode::Browse if matches!(app.active_source, SourceKind::Extractor(_)) => &[
+        Mode::Browse if app.tab == Tab::Online => &[
             (" /", " search "),
             ("j/k", " nav "),
             ("Enter", " play "),
             ("d", " dl "),
             ("Space", " pause "),
             ("Tab", " src "),
-            ("S", " settings "),
+            ("s", " settings "),
             ("q", " quit"),
         ],
         Mode::Browse => &[
-            (" /", " search "),
-            ("j/k", " nav "),
-            ("Enter", " play "),
+            (" l", " open "),
+            ("z x c v b", " transport "),
             ("Space", " pause "),
-            ("Tab", " src "),
-            ("S", " settings "),
+            ("P", " playlist "),
+            ("e", " EQ "),
+            ("y", " lyrics "),
+            ("s", " settings "),
             ("q", " quit"),
         ],
         Mode::Input => &[(" Enter", " submit "), ("Esc", " cancel")],
@@ -904,7 +838,6 @@ mod tests {
         let rects = render_windows(&mut buf, screen, screen, &skin, &view, &mut ui, &mut gfx);
         assert_eq!(rects.playlist.y, 6);
         assert_eq!(buf.cell(Position::new(37, 0)).unwrap().symbol(), "W");
-        assert!(rects.pause.width > 0);
     }
 
     #[test]
@@ -920,11 +853,8 @@ mod tests {
         let rects = render_windows(&mut buf, screen, screen, &skin, &view, &mut ui, &mut gfx);
         gfx.end_frame(&buf);
         // Image cells are skipped by ratatui; the seek bar maps inside the main window.
-        assert!(
-            buf.cell(Position::new(rects.seek.x, rects.seek.y))
-                .unwrap()
-                .skip
-        );
+        assert!(!rects.playlist.is_empty());
+        assert!(buf.content.iter().any(|c| c.skip));
         let mut out = Vec::new();
         gfx.flush(&mut out).unwrap();
         let s = String::from_utf8_lossy(&out);
