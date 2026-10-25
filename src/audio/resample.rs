@@ -44,8 +44,6 @@ pub struct Resampler {
     /// (exact) or `p / FINE_PHASES` (fine), each normalised to unity DC gain.
     table: Vec<f32>,
     fine: bool,
-    /// Per-channel output of the first of two blended fine phase rows.
-    scratch: Vec<f32>,
 }
 
 fn gcd(mut a: u64, mut b: u64) -> u64 {
@@ -67,39 +65,22 @@ fn bessel_i0(x: f64) -> f64 {
     sum
 }
 
-/// `coef . h[c]` for each of `C` channels with one accumulator per lane, which
+/// `a . b` over whole `LANES` chunks with one accumulator per lane, which
 /// the compiler turns into SIMD multiply-adds without reassociating floats.
-/// Several channels at once share the coefficient loads.
 #[inline(always)]
-fn dot<const C: usize>(coef: &[f32], h: [&[f32]; C]) -> [f32; C] {
-    let coef = coef.as_chunks::<LANES>().0;
-    let h = h.map(|s| &s.as_chunks::<LANES>().0[..coef.len()]);
-    let mut acc = [[0.0f32; LANES]; C];
-    for (k, c) in coef.iter().enumerate() {
-        for (acc, h) in acc.iter_mut().zip(&h) {
-            for ((s, x), y) in acc.iter_mut().zip(c).zip(&h[k]) {
-                *s += x * y;
-            }
+fn dot(a: &[f32], b: &[f32]) -> f32 {
+    let mut acc = [0.0f32; LANES];
+    for (x, y) in a
+        .as_chunks::<LANES>()
+        .0
+        .iter()
+        .zip(b.as_chunks::<LANES>().0)
+    {
+        for ((s, x), y) in acc.iter_mut().zip(x).zip(y) {
+            *s += x * y;
         }
     }
-    acc.map(|a| a.iter().sum())
-}
-
-/// Filter each channel's taps `first..first + row.len()` with `row`, passing
-/// (channel, sample) to `sink`.
-#[inline(always)]
-fn apply(hist: &[Vec<f32>], row: &[f32], first: usize, mut sink: impl FnMut(usize, f32)) {
-    let span = first..first + row.len();
-    if let [l, r] = hist {
-        let [a, b] = dot(row, [&l[span.clone()], &r[span]]);
-        sink(0, a);
-        sink(1, b);
-    } else {
-        for (c, h) in hist.iter().enumerate() {
-            let [y] = dot(row, [&h[span.clone()]]);
-            sink(c, y);
-        }
-    }
+    acc.iter().sum()
 }
 
 impl Resampler {
@@ -162,7 +143,6 @@ impl Resampler {
             hist: vec![Vec::new(); channels],
             table,
             fine,
-            scratch: vec![0.0; channels],
         };
         r.reset();
         r
@@ -211,15 +191,17 @@ impl Resampler {
                 let t = (x % den) as f32 / den as f32;
                 let a = &self.table[p * taps..(p + 1) * taps];
                 let b = &self.table[(p + 1) * taps..(p + 2) * taps];
-                let scratch = &mut self.scratch;
-                apply(&self.hist, a, first, |c, y| scratch[c] = y);
-                apply(&self.hist, b, first, |c, y| {
-                    out.push(scratch[c] + (y - scratch[c]) * t);
-                });
+                for h in &self.hist {
+                    let w = &h[first..first + taps];
+                    let (ya, yb) = (dot(a, w), dot(b, w));
+                    out.push(ya + (yb - ya) * t);
+                }
             } else {
                 let p = self.num as usize;
                 let row = &self.table[p * taps..(p + 1) * taps];
-                apply(&self.hist, row, first, |_, y| out.push(y));
+                for h in &self.hist {
+                    out.push(dot(row, &h[first..first + taps]));
+                }
             }
             self.base += self.step_int;
             self.num += self.step_num;
@@ -535,5 +517,56 @@ mod tests {
                  gain at 20 kHz-equiv {edge:+.4} dB, stopband/spurious {worst:.1} dB"
             );
         }
+    }
+
+    #[inline(always)]
+    fn dot2(c: &[f32], l: &[f32], r: &[f32]) -> (f32, f32) {
+        let (mut al, mut ar) = ([0.0f32; LANES], [0.0f32; LANES]);
+        for ((c, l), r) in c
+            .as_chunks::<LANES>()
+            .0
+            .iter()
+            .zip(l.as_chunks::<LANES>().0)
+            .zip(r.as_chunks::<LANES>().0)
+        {
+            for (((sl, sr), c), (l, r)) in
+                al.iter_mut().zip(ar.iter_mut()).zip(c).zip(l.iter().zip(r))
+            {
+                *sl += c * l;
+                *sr += c * r;
+            }
+        }
+        (al.iter().sum(), ar.iter().sum())
+    }
+
+    #[test]
+    #[ignore = "experiment"]
+    fn bench_dot_variants() {
+        let r = Resampler::new(44_100, 48_000, 2);
+        let l: Vec<f32> = (0..8192).map(|i| (i as f32 * 0.01).sin()).collect();
+        let rr: Vec<f32> = (0..8192).map(|i| (i as f32 * 0.013).cos()).collect();
+        let n = 48_000 * 60;
+        let taps = r.taps;
+        let t = std::time::Instant::now();
+        let mut s = 0.0f32;
+        for i in 0..n {
+            let row = r.row(i % 160);
+            let f = std::hint::black_box(i % 8000);
+            s += dot(row, &l[f..f + taps]) + dot(row, &rr[f..f + taps]);
+        }
+        let a = t.elapsed();
+        let t = std::time::Instant::now();
+        for i in 0..n {
+            let row = r.row(i % 160);
+            let f = std::hint::black_box(i % 8000);
+            let (x, y) = dot2(row, &l[f..f + taps], &rr[f..f + taps]);
+            s += x + y;
+        }
+        let b = t.elapsed();
+        println!(
+            "bench dot: per channel {:.1} ns/frame, stereo {:.1} ns/frame ({s})",
+            a.as_secs_f64() * 1e9 / n as f64,
+            b.as_secs_f64() * 1e9 / n as f64
+        );
     }
 }
