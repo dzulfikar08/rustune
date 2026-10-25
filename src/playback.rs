@@ -1,166 +1,172 @@
-//! Playback backends behind one seam. Local files go to rodio (pure Rust);
-//! streams, and local files rodio cannot decode, go to mpv. Every control
-//! call is routed to the backend that is *actually* playing, so a decode
-//! fallback never sends pause/seek to an idle rodio player.
-//!
-//! The replacement audio engine plugs in here: `play_local`/`play_url`,
-//! `set_paused`, `seek`, `stop`, `finished`, plus whatever volume/EQ setters
-//! it offers, called from `Controller::apply`.
+//! The playback seam between the controller and the native audio engine
+//! (`crate::audio`). Without an output device the engine is unavailable:
+//! play requests then fail with the reason and the TUI keeps working.
 
-use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Result};
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::audio::{Engine, ReplayGainMode, Source};
 use crate::event::AppEvent;
-use crate::player::{LocalHandle, MpvHandle};
+use crate::tap::Tap;
+use crate::view::EqSettings;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Backend {
-    Idle,
-    Local,
-    Mpv,
+/// What the controller needs from an audio output. Implemented by the real
+/// engine and, in tests, by a recorder.
+pub trait Output {
+    fn play(&self, src: Source, token: u64);
+    fn preload(&self, src: Source, token: u64);
+    fn cancel_preload(&self);
+    fn pause(&self);
+    fn resume(&self);
+    fn stop(&self);
+    fn seek(&self, pos: Duration) -> Result<()>;
+    fn position(&self) -> Duration;
+    fn set_volume(&self, v: f32);
+    fn set_balance(&self, b: f32);
+    fn set_eq(&self, eq: EqSettings);
+    fn set_replaygain(&self, mode: ReplayGainMode);
+}
+
+impl Output for Engine {
+    fn play(&self, src: Source, token: u64) {
+        Engine::play(self, src, token);
+    }
+    fn preload(&self, src: Source, token: u64) {
+        Engine::preload(self, src, token);
+    }
+    fn cancel_preload(&self) {
+        Engine::cancel_preload(self);
+    }
+    fn pause(&self) {
+        Engine::pause(self);
+    }
+    fn resume(&self) {
+        Engine::resume(self);
+    }
+    fn stop(&self) {
+        Engine::stop(self);
+    }
+    fn seek(&self, pos: Duration) -> Result<()> {
+        Engine::seek(self, pos)
+    }
+    fn position(&self) -> Duration {
+        Engine::position(self)
+    }
+    fn set_volume(&self, v: f32) {
+        Engine::set_volume(self, v);
+    }
+    fn set_balance(&self, b: f32) {
+        Engine::set_balance(self, b);
+    }
+    fn set_eq(&self, eq: EqSettings) {
+        Engine::set_eq(self, eq);
+    }
+    fn set_replaygain(&self, mode: ReplayGainMode) {
+        Engine::set_replaygain(self, mode);
+    }
 }
 
 pub struct Playback {
-    tx: UnboundedSender<AppEvent>,
-    local: Option<LocalHandle>,
-    mpv: Option<MpvHandle>,
-    active: Backend,
-}
-
-fn file_url(path: &Path) -> String {
-    format!("file://{}", path.display())
+    out: std::result::Result<Box<dyn Output>, String>,
+    tap: Arc<Tap>,
 }
 
 impl Playback {
+    /// Open the default output device. Engine events arrive as
+    /// `AppEvent::Engine` on `tx`.
     pub fn new(tx: UnboundedSender<AppEvent>) -> Self {
+        let tap = Arc::new(Tap::new());
+        let on_event = Box::new(move |event| {
+            let _ = tx.send(AppEvent::Engine(event));
+        });
+        let out = Engine::new(tap.clone(), on_event)
+            .map(|engine| Box::new(engine) as Box<dyn Output>)
+            .map_err(|e| format!("No audio output: {e:#}"));
+        Self { out, tap }
+    }
+
+    /// A seam without audio (`reason` is reported on every play request).
+    #[cfg(test)]
+    pub fn unavailable(reason: &str) -> Self {
         Self {
-            tx,
-            local: None,
-            mpv: None,
-            active: Backend::Idle,
+            out: Err(reason.to_string()),
+            tap: Arc::new(Tap::new()),
         }
     }
 
-    pub fn active(&self) -> Backend {
-        self.active
-    }
-
-    fn stop_mpv(&mut self) {
-        if let Some(mpv) = self.mpv.take() {
-            mpv.shutdown();
+    #[cfg(test)]
+    pub fn with_output(out: Box<dyn Output>) -> Self {
+        Self {
+            out: Ok(out),
+            tap: Arc::new(Tap::new()),
         }
     }
 
-    /// Play a local file with rodio, falling back to mpv for formats rodio
-    /// cannot decode. `mpv_missing` short-circuits the fallback with a clear
-    /// error instead of a spawn failure.
-    pub fn play_local(&mut self, path: &Path, mpv_missing: bool) -> Result<()> {
-        if self.local.is_none() {
-            // The output device is opened once and kept for the session.
-            self.local = LocalHandle::new(self.tx.clone()).ok();
-        }
-        let attempt = match &self.local {
-            Some(local) => {
-                let result = local.play_file(&path.to_string_lossy());
-                if result.is_err() {
-                    local.stop();
-                }
-                result
+    /// Samples after the DSP chain, shared with the visualizer.
+    pub fn tap(&self) -> &Arc<Tap> {
+        &self.tap
+    }
+
+    /// Why audio is unavailable (no output device), if it is.
+    pub fn error(&self) -> Option<&str> {
+        self.out.as_ref().err().map(String::as_str)
+    }
+
+    fn with<T>(&self, f: impl FnOnce(&dyn Output) -> T) -> Option<T> {
+        self.out.as_deref().ok().map(f)
+    }
+
+    pub fn play(&self, src: Source, token: u64) -> Result<()> {
+        match &self.out {
+            Ok(out) => {
+                out.play(src, token);
+                Ok(())
             }
-            None => Err(anyhow::anyhow!("no audio output device")),
-        };
-        let rodio_err = match attempt {
-            Ok(()) => {
-                self.stop_mpv();
-                self.active = Backend::Local;
-                return Ok(());
-            }
-            Err(e) => e,
-        };
-        if mpv_missing {
-            self.active = Backend::Idle;
-            anyhow::bail!("{rodio_err:#} (mpv fallback not installed)");
+            Err(reason) => Err(anyhow!("{reason}")),
         }
-        self.play_url(&file_url(path), false)
-            .with_context(|| format!("{rodio_err:#}; mpv fallback failed"))
     }
 
-    /// Play a URL (or `file://` URL) through mpv.
-    pub fn play_url(&mut self, url: &str, mpv_missing: bool) -> Result<()> {
-        if let Some(local) = &self.local {
-            local.stop();
-        }
-        if mpv_missing {
-            self.active = Backend::Idle;
-            anyhow::bail!("Streaming needs mpv, which is not installed (see `rustune doctor`)");
-        }
-        if self.mpv.is_none() {
-            match MpvHandle::new(self.tx.clone()) {
-                Ok(handle) => self.mpv = Some(handle),
-                Err(e) => {
-                    self.active = Backend::Idle;
-                    return Err(e.context("Cannot start mpv (needed for streams)"));
-                }
-            }
-        }
-        if let Some(mpv) = &self.mpv {
-            mpv.loadfile(url)?;
-        }
-        self.active = Backend::Mpv;
-        Ok(())
+    pub fn preload(&self, src: Source, token: u64) {
+        self.with(|o| o.preload(src, token));
+    }
+
+    pub fn cancel_preload(&self) {
+        self.with(|o| o.cancel_preload());
     }
 
     pub fn set_paused(&self, paused: bool) {
-        match self.active {
-            Backend::Local => {
-                if let Some(local) = &self.local {
-                    local.set_pause(paused);
-                }
-            }
-            Backend::Mpv => {
-                if let Some(mpv) = &self.mpv {
-                    let _ = mpv.set_pause(paused);
-                }
-            }
-            Backend::Idle => {}
-        }
+        self.with(|o| if paused { o.pause() } else { o.resume() });
     }
 
     pub fn seek(&self, pos: Duration) -> Result<()> {
-        match self.active {
-            Backend::Local => match &self.local {
-                Some(local) => local.seek_to(pos),
-                None => Ok(()),
-            },
-            Backend::Mpv => match &self.mpv {
-                Some(mpv) => mpv.seek_to(pos.as_secs_f64()),
-                None => Ok(()),
-            },
-            Backend::Idle => Ok(()),
-        }
+        self.with(|o| o.seek(pos))
+            .unwrap_or_else(|| Err(anyhow!("nothing is playing")))
     }
 
-    pub fn stop(&mut self) {
-        if let Some(local) = &self.local {
-            local.stop();
-        }
-        self.stop_mpv();
-        self.active = Backend::Idle;
+    pub fn stop(&self) {
+        self.with(|o| o.stop());
     }
 
-    /// Has the local backend run out of audio? (mpv reports end-of-track
-    /// via `AppEvent::PlaybackComplete` where supported.)
-    pub fn finished(&self) -> bool {
-        self.active == Backend::Local && self.local.as_ref().is_some_and(LocalHandle::is_finished)
+    pub fn position(&self) -> Duration {
+        self.with(|o| o.position()).unwrap_or_default()
     }
 
-    pub fn shutdown(mut self) {
-        self.stop_mpv();
-        if let Some(local) = self.local.take() {
-            local.shutdown();
-        }
+    pub fn set_volume(&self, v: f32) {
+        self.with(|o| o.set_volume(v));
+    }
+
+    pub fn set_balance(&self, b: f32) {
+        self.with(|o| o.set_balance(b));
+    }
+
+    pub fn set_eq(&self, eq: EqSettings) {
+        self.with(|o| o.set_eq(eq));
+    }
+
+    pub fn set_replaygain(&self, mode: ReplayGainMode) {
+        self.with(|o| o.set_replaygain(mode));
     }
 }

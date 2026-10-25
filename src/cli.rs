@@ -51,33 +51,44 @@ pub fn help_text(program: &str) -> String {
 
 USAGE:
     {program} [FILE|DIR|URL|PLAYLIST]...   Play the given items (or open the library)
-    {program} doctor                       Check optional tools and paths
+    {program} doctor                       Check audio output, optional tools and paths
     {program} --help | --version
 
 ARGUMENTS:
-    FILE       Audio file (mp3, flac, ogg, wav, m4a, ...)
+    FILE       Audio file (mp3, flac, ogg, wav, m4a, aac, alac, aiff, ...)
     DIR        Directory, scanned recursively for audio files
-    URL        http(s) stream, or a YouTube URL (resolved with yt-dlp)
+    URL        http(s) stream or radio playlist, or a YouTube URL (yt-dlp)
     PLAYLIST   .m3u / .m3u8 / .pls (entries relative to the playlist)
 
-KEYS (library view):
-    /            search            j/k ↓/↑     move           g/G   first/last
-    Enter        play results as queue        a     append to queue
-    A            play next                    n/p   next/prev result page (online)
-    Tab          local / online source        d     download (online)
-    s            settings                     q     quit
-
-KEYS (transport, Winamp style):
+KEYS (transport, Winamp style; work everywhere in the player):
     z  previous   x  play   c  pause   v  stop   b  next   Space  play/pause
     ←/→  seek ∓5 s        Shift+←/→  seek ∓30 s
     + / = / -  volume     S  shuffle   R  repeat (off/all/one)
-    e  EQ window   P  playlist window   l  open file/URL   w  save queue as .m3u
+    e  EQ panel   P  playlist window   l  open file/URL   w  save queue as .m3u
+    V  cycle visualizer    y  lyrics panel    q / Ctrl+C  quit
+
+KEYS (library):
+    /            search            j/k ↓/↑     move           g/G   first/last
+    Enter        play list as queue           a     append to queue
+    A            play next                    n/p   next/prev result page (online)
+    Tab/S-Tab    source tab: Local, Online, Radio, Podcasts, Subsonic, Jellyfin
+    d            download (online)            s     settings
+
+KEYS (Radio, Podcasts, Subsonic, Jellyfin):
+    Enter  open / play   Backspace/Esc  up a level   /  search   r  reload
+    f      subscribe to / unsubscribe from a podcast
 
 KEYS (playlist window, P):
     j/k  move   Enter  play   J/K  reorder   D/Del  remove   P  back to library
 
+KEYS (EQ panel, e):
+    ←/→ h/l  select slider   ↑/↓ k/j  ±1 dB   K/J  ±3 dB   0  reset slider
+    o  EQ on/off             [ / ]  previous/next preset
+
 COMMANDS (type after /):
-    :q  quit      :clear  clear the queue      :eq <preset>  load an EQ preset
+    :q  quit   :clear  clear the queue   :eq <preset>|toggle|auto   :vol N   :bal N
+    :seek 90|1:30|+10|-10   :repeat off|all|one   :shuffle   :preamp dB   :band 1-10 dB
+    :play :pause :toggle :stop :next :prev :open
 
 FILES:
     config      {config}
@@ -85,8 +96,8 @@ FILES:
     playlists   {playlists}
     skins       {skins}
 
-Playback of local files is built in. mpv is optional (streams and exotic
-formats); yt-dlp is optional (online search). Run '{program} doctor'.
+Playback is built in (no mpv). Optional tools: yt-dlp (online search and
+downloads), ffmpeg (opus/wma and HLS streams). Run '{program} doctor'.
 
 MORE:
     https://rustune.dzulfikar.com",
@@ -98,10 +109,25 @@ MORE:
     )
 }
 
-/// `rustune doctor`: report optional tools and paths. Never fails; every
-/// external tool is optional.
+/// Name of the default audio output device, if there is one.
+fn output_device() -> Option<String> {
+    use cpal::traits::{DeviceTrait, HostTrait};
+    let device = cpal::default_host().default_output_device()?;
+    Some(
+        device
+            .description()
+            .map_or_else(|_| "default".to_string(), |d| d.name().to_string()),
+    )
+}
+
+/// `rustune doctor`: report the audio output, optional tools and paths.
+/// Never fails; every external tool is optional.
 pub async fn doctor() {
     println!("rustune {} — doctor\n", env!("CARGO_PKG_VERSION"));
+    match output_device() {
+        Some(name) => println!("  [ok] audio output: {name}"),
+        None => println!("  [!!] audio output: no default output device found"),
+    }
     let deps = install::probe_deps().await;
     let report = |dep: Dep, status: &DepStatus, purpose: &str| match status {
         DepStatus::Found(version) => println!("  [ok] {}: {version}", dep.binary()),
@@ -111,15 +137,8 @@ pub async fn doctor() {
             dep.homepage()
         ),
     };
-    report(
-        Dep::Mpv,
-        &deps.mpv,
-        "streams and formats rodio cannot decode",
-    );
-    if crate::player::check_mpv().await.is_err() && deps.mpv != DepStatus::Missing {
-        println!("       mpv is installed but did not start cleanly");
-    }
     report(Dep::Ytdlp, &deps.ytdlp, "online search and downloads");
+    report(Dep::Ffmpeg, &deps.ffmpeg, "opus/wma files and HLS streams");
 
     let dir = config::config_dir();
     if dir.exists() {
@@ -136,8 +155,11 @@ pub async fn doctor() {
     } else {
         println!("  [--] music dir: {} (not found)", cfg.music_dir.display());
     }
+    let mut sources = vec!["Local", "Online"];
+    sources.extend(cfg.providers.enabled().into_iter().map(|k| k.display_name()));
+    println!("  [ok] sources: {}", sources.join(", "));
 
-    println!("\nLocal playback works without external tools. Run 'rustune' to start.");
+    println!("\nPlayback needs no external tools. Run 'rustune' to start.");
 }
 
 /// Expand positional arguments into queue items (blocking: walks
@@ -231,6 +253,9 @@ mod tests {
             "z  previous",
             "Shift+←/→",
             "w  save queue",
+            "V  cycle visualizer",
+            "y  lyrics",
+            "Backspace/Esc",
             "doctor",
             ".pls",
         ] {

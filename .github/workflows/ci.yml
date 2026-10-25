@@ -70,3 +70,98 @@ jobs:
             echo "| crates (normal deps) | $deps |"
           } >> "$GITHUB_STEP_SUMMARY"
           cat "$GITHUB_STEP_SUMMARY"
+
+  smoke:
+    name: smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - name: --help
+        shell: bash
+        run: |
+          out=$(target/release/rustune --help)
+          echo "$out"
+          grep -q USAGE <<<"$out"
+      - name: doctor
+        shell: bash
+        run: |
+          tmp=$(mktemp -d)
+          HOME="$tmp" XDG_CONFIG_HOME="$tmp/.config" target/release/rustune doctor
+      - name: Play a WAV in a pseudo-terminal
+        shell: bash
+        run: |
+          python3 - <<'EOF'
+          import math, os, pty, struct, subprocess, sys, tempfile, threading, time, wave
+          import fcntl, termios
+
+          tmp = tempfile.mkdtemp()
+          wav = os.path.join(tmp, "tone.wav")
+          rate = 44100
+          with wave.open(wav, "wb") as w:
+              w.setnchannels(2)
+              w.setsampwidth(2)
+              w.setframerate(rate)
+              frames = bytearray()
+              for i in range(rate * 5):
+                  s = int(12000 * math.sin(2 * math.pi * 440 * i / rate))
+                  frames += struct.pack("<hh", s, s)
+              w.writeframes(bytes(frames))
+
+          home = os.path.join(tmp, "home")
+          xdg = os.path.join(home, ".config")
+          config = 'onboarding_done = true\nmusic_dir = "%s"\n' % tmp
+          for d in (os.path.join(xdg, "rustune"),
+                    os.path.join(home, "Library", "Application Support", "rustune")):
+              os.makedirs(d, exist_ok=True)
+              with open(os.path.join(d, "config.toml"), "w") as f:
+                  f.write(config)
+
+          env = dict(os.environ, TERM="xterm-256color", HOME=home, XDG_CONFIG_HOME=xdg)
+          master, slave = os.openpty()
+          fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+          proc = subprocess.Popen(["target/release/rustune", wav], stdin=slave,
+                                  stdout=slave, stderr=slave, env=env, start_new_session=True)
+          os.close(slave)
+
+          out = bytearray()
+          def drain():
+              while True:
+                  try:
+                      chunk = os.read(master, 65536)
+                  except OSError:
+                      break
+                  if not chunk:
+                      break
+                  out.extend(chunk)
+          reader = threading.Thread(target=drain, daemon=True)
+          reader.start()
+
+          time.sleep(4)
+          os.write(master, b"q")
+          failed = None
+          try:
+              code = proc.wait(timeout=10)
+              if code != 0:
+                  failed = "exit status %d" % code
+          except subprocess.TimeoutExpired:
+              proc.kill()
+              proc.wait()
+              failed = "timed out waiting for exit after q"
+          reader.join(timeout=2)
+          if failed is None and b"panicked" in out:
+              failed = "panic in output"
+          if failed:
+              print("smoke test failed:", failed)
+              print(bytes(out[-2048:]).decode("utf-8", errors="replace"))
+              sys.exit(1)
+          print("smoke test passed (%d bytes of output)" % len(out))
+          EOF

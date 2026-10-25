@@ -90,8 +90,8 @@ fn render_dependencies(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) 
             DepStatus::Missing => (false, "Not found".into()),
         }
     };
-    let mpv_status = status(&app.deps.mpv);
     let ytdlp_status = status(&app.deps.ytdlp);
+    let ffmpeg_status = status(&app.deps.ffmpeg);
 
     let dep_line = |found: bool, name: &str, version: &str, selected: bool| -> Line<'static> {
         let (mark, mark_style) = if found {
@@ -135,15 +135,15 @@ fn render_dependencies(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) 
         )),
         Line::from(""),
         dep_line(
-            mpv_status.0,
-            "mpv (optional, for streams)",
-            &mpv_status.1,
-            sel == 0,
-        ),
-        dep_line(
             ytdlp_status.0,
             "yt-dlp (optional, for online search)",
             &ytdlp_status.1,
+            sel == 0,
+        ),
+        dep_line(
+            ffmpeg_status.0,
+            "ffmpeg (optional, for opus/wma and HLS streams)",
+            &ffmpeg_status.1,
             sel == 1,
         ),
         Line::from(""),

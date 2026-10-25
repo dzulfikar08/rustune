@@ -112,6 +112,8 @@ impl Shared {
 pub enum Cmd {
     Play(Source, u64),
     Preload(Source, u64),
+    /// Drop the preloaded track (the queue changed and nothing follows).
+    CancelPreload,
     /// Pause/resume flags changed; re-evaluate the output stream.
     Sync,
     Stop,
@@ -257,6 +259,10 @@ impl Controller {
                     let old = sh.next.swap(Arc::as_ptr(&t).cast_mut(), Ordering::SeqCst);
                     self.retire(old);
                 }
+            }
+            Cmd::CancelPreload => {
+                let old = sh.next.swap(null_mut(), Ordering::SeqCst);
+                self.retire(old);
             }
             Cmd::Sync => {}
             Cmd::Stop => {

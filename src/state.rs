@@ -1,5 +1,6 @@
 //! Session persistence (`<config dir>/rustune/state.toml`): volume, balance,
-//! EQ, shuffle/repeat, skin, theme and the last queue with resume position.
+//! EQ, shuffle/repeat, skin, theme, visualizer mode and the last queue with
+//! resume position.
 
 use std::path::Path;
 
@@ -8,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::media::{MediaItem, SourceKind};
 use crate::view::{EqSettings, RepeatMode, EQ_BANDS, EQ_MAX_DB};
+use crate::vis::VisMode;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -28,6 +30,8 @@ pub struct SessionState {
     pub queue_index: Option<usize>,
     /// Playback position of that track, for resume.
     pub position_secs: u64,
+    /// Visualizer mode (cycled with `V`).
+    pub vis: VisMode,
     pub eq: EqSettings,
     pub queue: Vec<QueueEntry>,
 }
@@ -43,6 +47,7 @@ impl Default for SessionState {
             theme: None,
             queue_index: None,
             position_secs: 0,
+            vis: VisMode::default(),
             eq: EqSettings::default(),
             queue: Vec::new(),
         }
@@ -180,6 +185,7 @@ mod tests {
             theme: Some("Winamp".into()),
             queue_index: Some(1),
             position_secs: 93,
+            vis: VisMode::Spectrogram,
             eq,
             queue: vec![
                 QueueEntry::from(&MediaItem {

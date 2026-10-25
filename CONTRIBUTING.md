@@ -8,7 +8,7 @@ Thanks for your interest in contributing! This guide covers how to report bugs, 
 2. Open a new issue with:
    - **OS and version** (macOS, Linux, Windows)
    - **rustune version** (or commit hash)
-   - **mpv and yt-dlp versions**
+   - **yt-dlp and ffmpeg versions** (if used)
    - Steps to reproduce
    - Expected vs actual behavior
 
@@ -21,8 +21,8 @@ Open an issue with the label `enhancement`. Describe the feature and why it woul
 ### Prerequisites
 
 - [Rust](https://rustup.rs/) (latest stable)
-- [mpv](https://mpv.io/) — media player backend
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — for YouTube search
+- Linux: ALSA development headers (`libasound2-dev` on Debian/Ubuntu, `alsa-lib-devel` on Fedora)
+- Optional: [yt-dlp](https://github.com/yt-dlp/yt-dlp) (online search/download) and [ffmpeg](https://ffmpeg.org/) (exotic formats, HLS)
 
 ### Build and Run
 

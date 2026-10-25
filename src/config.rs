@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use crate::audio::ReplayGainMode;
+use crate::providers::ProvidersConfig;
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Config {
     #[serde(default = "default_music_dir")]
@@ -19,6 +22,12 @@ pub struct Config {
     pub search_timeout_secs: u64,
     #[serde(default = "default_page_size")]
     pub page_size: usize,
+    /// Loudness normalisation from ReplayGain tags: off, track or album.
+    #[serde(default)]
+    pub replaygain: ReplayGainMode,
+    /// Radio, podcasts, lyrics, Subsonic and Jellyfin (`[providers.*]`).
+    #[serde(default)]
+    pub providers: ProvidersConfig,
 }
 
 fn default_music_dir() -> PathBuf {
@@ -145,6 +154,8 @@ impl Default for Config {
             extractor: default_extractor(),
             search_timeout_secs: default_timeout(),
             page_size: default_page_size(),
+            replaygain: ReplayGainMode::Off,
+            providers: ProvidersConfig::default(),
         }
     }
 }
@@ -161,6 +172,24 @@ mod tests {
         assert_eq!(cfg.theme, "Winamp");
         assert_eq!(cfg.search_timeout_secs, 5);
         assert_eq!(cfg.page_size, 30);
+        assert_eq!(cfg.replaygain, ReplayGainMode::Off);
+        assert!(cfg.providers.subsonic.is_none());
+    }
+
+    #[test]
+    fn providers_section_parses_and_round_trips() {
+        let text = "replaygain = \"album\"\n\
+                    [providers.podcast]\nsubscriptions = [\"https://feed.example/rss\"]\n\
+                    [providers.lyrics]\nenabled = false\n\
+                    [providers.subsonic]\nurl = \"https://music.example\"\nuser = \"u\"\npassword = \"p\"\n";
+        let cfg: Config = toml::from_str(text).expect("providers parse");
+        assert_eq!(cfg.replaygain, ReplayGainMode::Album);
+        assert_eq!(cfg.providers.podcast.subscriptions.len(), 1);
+        assert!(!cfg.providers.lyrics.enabled);
+        assert!(cfg.providers.subsonic.is_some());
+        let again: Config =
+            toml::from_str(&toml::to_string_pretty(&cfg).expect("serialize")).expect("reparse");
+        assert_eq!(again.providers, cfg.providers);
     }
 
     #[test]

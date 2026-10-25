@@ -12,15 +12,13 @@ categories = ["command-line-utilities", "multimedia::audio"]
 [dependencies]
 ratatui = "0.29"
 crossterm = "0.28"
-tokio = { version = "1", default-features = false, features = ["rt", "macros", "sync", "time", "process", "net", "io-util"] }
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "sync", "time", "process"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 toml = "0.8"
 dirs = "6"
 zip = { version = "8.5.0", features = ["deflate"] }
-# Legacy src/player.rs only; removed once the integrator switches to src/audio.
-rodio = { version = "0.22", default-features = false, features = ["playback", "flac", "mp3", "mp4", "vorbis", "wav"] }
 cpal = "0.17"
 symphonia = { version = "=0.5.5", default-features = false, features = ["mp3", "flac", "ogg", "vorbis", "wav", "pcm", "isomp4", "aac", "alac", "aiff", "mkv"] }
 ureq = { version = "3", features = ["json"] }

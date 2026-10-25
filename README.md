@@ -1,6 +1,6 @@
 # rustune
 
-A terminal music player with online audio search, local playback, and Winamp skin support. Built in Rust with a beautiful TUI.
+A lightweight terminal music player: a single small binary with no mpv or other runtime dependencies. Native Rust audio engine, visualizer, synced lyrics, Internet radio, podcasts, self-hosted servers and pixel-accurate Winamp skins — all in your terminal.
 
 **[Website](https://rustune.dzulfikar.com)** | **[Releases](https://github.com/dzulfikar08/rustune/releases)** | **[Contributing](CONTRIBUTING.md)**
 
@@ -8,14 +8,20 @@ A terminal music player with online audio search, local playback, and Winamp ski
 
 ## Features
 
-- **Local music playback** — Scan and play music from your filesystem (MP3, FLAC, OGG, WAV, M4A, AAC, OPUS, WMA)
-- **Online audio search** — Search and stream audio from online sources via yt-dlp
-- **Winamp skins** — Load classic Winamp 2.x `.wsz` skins, or browse and download from the online gallery
-- **Multiple themes** — Dark, Light, and Winamp themes built in
-- **Mouse support** — Click to play, pause, seek, and navigate
-- **Pagination** — Browse large collections page by page
-- **Search history** — Navigate through previous searches
-- **First-run setup** — Guided onboarding for new users
+- **Native audio engine** (cpal + symphonia) — gapless playback, 10-band EQ with Winamp presets and preamp, ReplayGain (track/album), balance, volume
+- **Streams** — HTTP streams with ICY (now-playing) titles, radio playlists (`.pls` / `.m3u`); optional ffmpeg for exotic formats and HLS
+- **Visualizer** — `bars`, `braille`, `led`, `mirror`, `scope`, `spectrogram`, `fire`, or `none`
+- **Lyrics** — fetched from [LRCLIB](https://lrclib.net), synced line-by-line when available
+- **Sources**
+  - Local library (MP3, FLAC, OGG, WAV, M4A, AAC, OPUS, WMA)
+  - Online search and download via yt-dlp (optional)
+  - Internet radio ([Radio Browser](https://www.radio-browser.info))
+  - Podcasts (iTunes charts and search, subscriptions)
+  - Subsonic / Navidrome and Jellyfin / Emby, when configured
+- **Winamp 2.x skins** (`.wsz`) — pixel-accurate rendering with kitty, iTerm2 or sixel graphics, or a half-block fallback; built-in browser for the [Winamp Skin Museum](https://skins.webamp.org/)
+- **Playlists** — load and save `.m3u` / `.pls`
+- **Session restore** — volume, balance, EQ, shuffle/repeat, visualizer, queue and resume position
+- **Themes** — Dark, Light and Winamp; full mouse support
 
 ## Screenshots
 
@@ -55,6 +61,13 @@ export PATH="$HOME/.local/bin:$PATH"
 
 After that, just run `rustune` from anywhere.
 
+### Requirements
+
+- To build: [Rust](https://rustup.rs/) (latest stable). On Linux, the ALSA development headers (`libasound2-dev` on Debian/Ubuntu, `alsa-lib-devel` on Fedora).
+- Optional at runtime:
+  - [yt-dlp](https://github.com/yt-dlp/yt-dlp) — online search and download
+  - [ffmpeg](https://ffmpeg.org/) — formats symphonia can't decode, and HLS streams
+
 ### From Source (cargo)
 
 ```bash
@@ -62,11 +75,6 @@ cargo install --git https://github.com/dzulfikar08/rustune
 ```
 
 ### From Source (manual)
-
-Requirements:
-- [Rust](https://rustup.rs/) (latest stable)
-- [mpv](https://mpv.io/) — media player backend
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — for online audio search and streaming
 
 ```bash
 git clone https://github.com/dzulfikar08/rustune.git
@@ -83,7 +91,7 @@ When you launch rustune for the first time, it will guide you through a short se
 2. **Theme** — Choose between Dark, Light, or Winamp style
 3. **Ready** — Start browsing and playing
 
-To check that all dependencies are installed, run:
+To check optional tools and paths, run:
 
 ```bash
 rustune doctor
@@ -91,82 +99,188 @@ rustune doctor
 
 ## Usage
 
-Run `rustune` in your terminal:
-
 ```bash
-rustune
+rustune [FILE|DIR|URL|PLAYLIST]...
 ```
-
-### CLI Commands
 
 | Command | Description |
 |---------|-------------|
-| `rustune` | Launch the TUI |
-| `rustune doctor` | Check dependencies and system status |
+| `rustune` | Launch the TUI (restores the last session) |
+| `rustune FILE\|DIR\|URL\|PLAYLIST...` | Replace the queue with the given items and play. Directories are scanned recursively; URLs may be http(s) streams or YouTube links (via yt-dlp); playlists are `.m3u` / `.m3u8` / `.pls` |
+| `rustune doctor` | Check optional tools and paths |
 | `rustune --help` | Show help |
 | `rustune --version` | Show version |
 
 ### Keybindings
 
-#### Browse Mode
+#### Transport (Winamp style)
 
 | Key | Action |
 |-----|--------|
-| `/` | Enter search |
-| `j` / `Down` | Move down |
-| `k` / `Up` | Move up |
-| `g` / `Home` | First item |
-| `G` / `End` | Last item |
-| `n` | Next page |
-| `p` | Previous page |
-| `Space` | Toggle pause |
-| `Enter` | Play selected |
-| `s` | Open settings |
-| `Tab` | Switch source (Local / Online) |
-| `q` | Quit |
+| `z` / `x` / `c` / `v` / `b` | Previous / play / pause / stop / next |
+| `Space` | Play / pause |
+| `←` / `→` | Seek −5 s / +5 s |
+| `Shift+←` / `Shift+→` | Seek −30 s / +30 s |
+| `+` / `=` / `-` | Volume up / up / down |
+| `S` | Toggle shuffle |
+| `R` | Cycle repeat (off / all / one) |
+| `e` | EQ panel |
+| `P` | Playlist window |
+| `l` | Open file / URL |
+| `V` | Cycle visualizer mode |
+| `y` | Lyrics |
+| `w` | Save queue as `.m3u` |
+| `q` / `Ctrl+C` | Quit |
 
-#### Search Mode
+#### Library
 
 | Key | Action |
 |-----|--------|
-| `Enter` | Submit search |
-| `Esc` | Cancel search |
-| `Up` / `Down` | Search history |
+| `/` | Search (or type a `:` command) |
+| `j` / `k`, `↓` / `↑` | Move |
+| `g` / `G`, `Home` / `End` | First / last item |
+| `Enter` | Play the list as the queue, starting at the selection |
+| `a` | Append to queue |
+| `A` | Play next |
+| `n` / `p` | Next / previous result page (online) |
+| `d` | Download (online) |
+| `Tab` / `Shift+Tab` | Next / previous source tab: Local, Online, Radio, Podcasts, Subsonic, Jellyfin |
+| `s` | Settings |
+
+#### Provider tabs (Radio, Podcasts, Subsonic, Jellyfin)
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Open folder / play item |
+| `Backspace` / `Esc` | Up a level |
+| `/` | Search |
+| `f` | Subscribe / unsubscribe podcast |
+| `r` | Reload the current level |
+
+#### Playlist window (`P`)
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Move |
+| `Enter` | Play |
+| `J` / `K` | Move item down / up |
+| `D` / `Del` | Remove |
+
+#### EQ panel (`e`)
+
+| Key | Action |
+|-----|--------|
+| `←` / `→`, `h` / `l` | Select band |
+| `↑` / `↓`, `k` / `j` | Band ±1 dB |
+| `K` / `J` | Band ±3 dB |
+| `0` | Reset |
+| `o` | EQ on / off |
+| `[` / `]` | Previous / next preset |
+
+#### Search prompt
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Submit |
+| `Esc` | Cancel |
+| `↑` / `↓` | Search history |
 | `Ctrl+U` | Clear input |
+
+#### Commands (type after `/`)
+
+| Command | Action |
+|---------|--------|
+| `:q` | Quit |
+| `:clear` | Clear the queue |
+| `:eq <preset>` / `:eq toggle` / `:eq auto` | Load an EQ preset / toggle EQ / auto preset |
+| `:vol N` | Set volume |
+| `:bal N` | Set balance |
+| `:seek 90` / `:seek 1:30` / `:seek +10` / `:seek -10` | Seek absolute or relative |
+| `:repeat off\|all\|one` | Set repeat mode |
+| `:shuffle` | Toggle shuffle |
+| `:play` / `:pause` / `:toggle` / `:stop` | Transport |
+| `:next` / `:prev` | Next / previous track |
+| `:preamp dB` | Set EQ preamp |
+| `:band 1-10 dB` | Set one EQ band |
+| `:open` | Open file / URL |
+
+#### Mouse
+
+Click a row to play it, use the wheel to scroll, and click the progress bar to seek. In Winamp mode every skin button and slider works with click and drag.
 
 ## Configuration
 
-Config file: `~/.config/rustune/config.toml`
+Config file: `~/.config/rustune/config.toml` on Linux, `~/Library/Application Support/rustune/config.toml` on macOS.
 
 ```toml
 music_dir = "~/Music"
 extensions = ["mp3", "flac", "ogg", "wav", "m4a", "aac", "opus", "wma"]
 theme = "Dark"
-page_size = 30
+extractor = "ytdlp"
 search_timeout_secs = 60
-mpv_args = []
+page_size = 30
+replaygain = "off"
+graphics = "auto"
 ```
-
-### Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `music_dir` | `~/Music` | Directory to scan for local music |
 | `extensions` | `mp3, flac, ogg, ...` | Audio file formats to recognize |
-| `theme` | `Dark` | Theme name: `Dark`, `Light`, or `Winamp` |
-| `page_size` | `30` | Results per page |
+| `theme` | `Dark` | `Dark`, `Light`, or `Winamp` |
+| `extractor` | `ytdlp` | Extractor used for online search |
 | `search_timeout_secs` | `60` | Timeout for online searches |
-| `mpv_args` | `[]` | Extra arguments passed to mpv |
+| `page_size` | `30` | Results per page |
+| `replaygain` | `off` | `off`, `track`, or `album` |
+| `graphics` | `auto` | Skin graphics: `auto`, `kitty`, `iterm2`, `sixel`, or `halfblock` |
+
+### Providers
+
+```toml
+[providers.radio]
+enabled = true
+server = ""        # Radio Browser API host; empty = discover a mirror
+country = ""       # ISO 3166-1 alpha-2 code for "stations in my country"
+
+[providers.podcast]
+enabled = true
+country = "us"     # iTunes store front for the charts
+subscriptions = [] # feed URLs (managed with `f` in the Podcasts tab)
+
+[providers.lyrics]
+enabled = true
+server = "https://lrclib.net"
+
+# Optional: configure to enable the Subsonic tab.
+[providers.subsonic]
+url = "https://music.example.com"
+user = "me"
+password = "secret"
+# format = "opus"     # transcoding target (mp3, opus, raw, ...)
+# max_bitrate = 192   # kbit/s
+scrobble = true
+
+# Optional: configure to enable the Jellyfin tab.
+[providers.jellyfin]
+url = "https://jellyfin.example.com"
+user = "me"
+password = "secret"
+# token = "..."       # API key instead of user/password
+# user_id = "..."     # skips user discovery when a token is set
+# max_bitrate = 320   # kbit/s (default 320)
+```
+
+Jellyfin stores the session token in the config after the first login.
+
+### Session state
+
+`state.toml` (next to `config.toml`) is written on exit and restored on start: volume, balance, EQ, shuffle/repeat, visualizer mode (`vis`), and the queue with the resume position.
 
 ## Winamp Skins
 
-### Local Skins
+Choose the **Winamp** theme in Settings (`s`). From there, press `i` to pick a local skin (`.wsz` files in the `skins/` folder of the config directory) or `o` to browse and download skins from the [Winamp Skin Museum](https://skins.webamp.org/).
 
-Place `.wsz` files in `~/.config/rustune/skins/` and select one from Settings (`s`).
-
-### Online Skin Browser
-
-From Settings, choose "Skins" to browse and download skins from the [Winamp Skin Museum](https://skins.webamp.org/) directly within the app.
+The terminal graphics protocol (kitty, iTerm2, sixel, or half-block fallback) is detected automatically; override it with the `graphics` config option.
 
 ## Disclaimer
 

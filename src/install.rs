@@ -1,4 +1,5 @@
-//! Optional external tools (mpv for streams, yt-dlp for online search):
+//! Optional external tools (yt-dlp for online search, ffmpeg for formats
+//! the native decoder lacks and HLS streams):
 //! background availability probing and the onboarding installer.
 
 use std::path::Path;
@@ -14,48 +15,58 @@ pub enum DepStatus {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Deps {
-    pub mpv: DepStatus,
     pub ytdlp: DepStatus,
+    pub ffmpeg: DepStatus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dep {
-    Mpv,
     Ytdlp,
+    Ffmpeg,
 }
 
 impl Dep {
     /// Onboarding list order.
-    pub const ALL: [Dep; 2] = [Dep::Mpv, Dep::Ytdlp];
+    pub const ALL: [Dep; 2] = [Dep::Ytdlp, Dep::Ffmpeg];
 
     pub fn binary(self) -> &'static str {
         match self {
-            Dep::Mpv => "mpv",
             Dep::Ytdlp => "yt-dlp",
+            Dep::Ffmpeg => "ffmpeg",
         }
     }
 
     pub fn homepage(self) -> &'static str {
         match self {
-            Dep::Mpv => "https://mpv.io",
             Dep::Ytdlp => "https://github.com/yt-dlp/yt-dlp",
+            Dep::Ffmpeg => "https://ffmpeg.org",
         }
     }
 }
 
-/// First non-empty line of `--version` output, trimmed to "name version".
+/// First non-empty line of `--version` output, trimmed to "name version"
+/// (ffmpeg's literal "version" word is skipped).
 fn version_line(stdout: &[u8]) -> String {
     let text = String::from_utf8_lossy(stdout);
     let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
     line.split_whitespace()
+        .filter(|w| *w != "version")
         .take(2)
         .collect::<Vec<_>>()
         .join(" ")
 }
 
+/// The flag that prints a version (ffmpeg only knows `-version`).
+fn version_flag(dep: Dep) -> &'static str {
+    match dep {
+        Dep::Ytdlp => "--version",
+        Dep::Ffmpeg => "-version",
+    }
+}
+
 async fn probe_one(dep: Dep) -> DepStatus {
     let output = tokio::process::Command::new(dep.binary())
-        .arg("--version")
+        .arg(version_flag(dep))
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true)
@@ -68,8 +79,8 @@ async fn probe_one(dep: Dep) -> DepStatus {
 
 /// Probe both tools concurrently without blocking the runtime thread.
 pub async fn probe_deps() -> Deps {
-    let (mpv, ytdlp) = tokio::join!(probe_one(Dep::Mpv), probe_one(Dep::Ytdlp));
-    Deps { mpv, ytdlp }
+    let (ytdlp, ffmpeg) = tokio::join!(probe_one(Dep::Ytdlp), probe_one(Dep::Ffmpeg));
+    Deps { ytdlp, ffmpeg }
 }
 
 /// Is `program` an executable file on `$PATH`? (No subprocess.)
@@ -89,7 +100,7 @@ pub fn install_command(dep: Dep) -> Option<(&'static str, Vec<&'static str>)> {
         return Some(("brew", vec!["install", pkg]));
     }
     match dep {
-        Dep::Mpv if on_path("apt") => Some(("sudo", vec!["apt", "install", "-y", pkg])),
+        Dep::Ffmpeg if on_path("apt") => Some(("sudo", vec!["apt", "install", "-y", pkg])),
         Dep::Ytdlp if on_path("pipx") => Some(("pipx", vec!["install", pkg])),
         Dep::Ytdlp if on_path("pip") => Some(("pip", vec!["install", pkg])),
         _ => None,
@@ -139,8 +150,8 @@ mod tests {
     #[test]
     fn version_line_extracts_name_and_version() {
         assert_eq!(
-            version_line(b"mpv 0.38.0 Copyright \xC2\xA9 2000-2024\nbuilt on ..."),
-            "mpv 0.38.0"
+            version_line(b"ffmpeg version 7.1 Copyright (c) 2000-2024\nbuilt with ..."),
+            "ffmpeg 7.1"
         );
         assert_eq!(version_line(b"\n2024.08.06\n"), "2024.08.06");
         assert_eq!(version_line(b""), "");

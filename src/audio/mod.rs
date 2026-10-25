@@ -151,6 +151,11 @@ impl Engine {
         self.send(Cmd::Preload(src, token));
     }
 
+    /// Forget the preloaded track, if it has not taken over yet.
+    pub fn cancel_preload(&self) {
+        self.send(Cmd::CancelPreload);
+    }
+
     pub fn pause(&self) {
         if self.shared.status() == PlayStatus::Playing {
             self.shared.paused.store(true, Ordering::SeqCst);

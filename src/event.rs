@@ -3,9 +3,11 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 use crate::app::SkinEntry;
+use crate::audio::EngineEvent;
 use crate::install::Deps;
 use crate::media::{MediaItem, StreamInfo};
 use crate::net::SkinPage;
+use crate::providers::lyrics::Lyrics;
 use crate::skin::WinampSkin;
 
 /// Everything the controller reacts to: terminal input (from the input
@@ -22,12 +24,13 @@ pub enum AppEvent {
         token: u64,
         result: Result<StreamInfo>,
     },
-    PlaybackProgress {
-        elapsed_secs: u64,
-        duration_secs: u64,
+    /// The audio engine reported progress of a track (engine thread).
+    Engine(EngineEvent),
+    /// LRCLIB answered for the track identified by `key`.
+    LyricsReady {
+        key: String,
+        result: Result<Option<Lyrics>, String>,
     },
-    /// The playing track reached its end (any backend).
-    PlaybackComplete,
     DepsProbed(Deps),
     ScanComplete(Result<Vec<MediaItem>>),
     /// Items resolved from command-line arguments or the open prompt.
