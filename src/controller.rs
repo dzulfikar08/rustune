@@ -1379,6 +1379,11 @@ impl Controller {
             (i + n - 1) % n
         }];
         self.app.tab = next;
+        if self.app.is_winamp() && matches!(self.app.status, Status::Error(_)) {
+            // The status line names the source now; an old error would read
+            // as if it were about the new one.
+            self.app.set_status(Status::Idle);
+        }
         match next {
             Tab::Local => {
                 self.app.results = self.app.local_library.clone();
@@ -2494,6 +2499,7 @@ mod tests {
         ctl.app.library_scanned = true;
         ctl.app.deps.ytdlp = DepStatus::Found("test".into());
         ctl.winamp_ui.show_playlist = false;
+        ctl.app.error("an old error about the Local source");
         ctl.on_browse_action(BrowseAction::SwitchTab(true));
         assert_eq!(ctl.app.tab, Tab::Online);
         assert!(!ctl.app.winamp_browse);

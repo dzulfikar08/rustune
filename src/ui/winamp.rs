@@ -730,7 +730,7 @@ fn draw_browser(
     fill(buf, r, normal);
     let right = r.right();
     let title = normal.fg(sc.plist_current).add_modifier(Modifier::BOLD);
-    let mut x = r.x;
+    let mut x = r.x + 1;
     for (i, crumb) in browser.crumbs().enumerate() {
         if i > 0 {
             x = put(buf, x, r.y, right, " › ", title);
@@ -772,7 +772,7 @@ fn draw_browser(
             normal
         };
         fill(buf, Rect::new(r.x, y, r.width, 1), style);
-        let mut cx = r.x;
+        let mut cx = r.x + 1;
         if browser.subscribed(entry) {
             cx = put(buf, cx, y, right, "★ ", style);
         }
@@ -1239,14 +1239,14 @@ mod tests {
         );
         let y = lines
             .iter()
-            .position(|l| l.starts_with("Top clicked ›"))
+            .position(|l| l.starts_with(" Top clicked ›"))
             .unwrap_or_else(|| panic!("{lines:#?}")) as u16;
         assert!(
-            lines[usize::from(y) - 2].starts_with("Radio "),
+            lines[usize::from(y) - 2].starts_with(" Radio "),
             "breadcrumb row"
         );
-        assert!(lines[usize::from(y) - 1].starts_with("Top voted ›"));
-        assert_eq!(rows, usize::from(29 - 1 - y + 1), "entry rows reported");
+        assert!(lines[usize::from(y) - 1].starts_with(" Top voted ›"));
+        assert_eq!(rows, usize::from(29 - y), "entry rows reported");
         let hints = row_text(&buf, 29);
         assert!(hints.contains(" Enter  open") && hints.contains(" Backspace  back"));
         // The first row is highlighted; clicks map through the browser rows.

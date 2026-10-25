@@ -160,6 +160,9 @@ def session(name, theme, cols, rows, steps, tracks):
         print("\n".join(text[-3:]))
         if check and not check(text):
             failures.append("%s/%s: check failed:\n%s" % (name, label, "\n".join(text[-3:])))
+    # Leave any prompt first: `q` would be typed into it.
+    os.write(master, ESC)
+    time.sleep(0.6)
     os.write(master, b"q")
     try:
         proc.wait(timeout=10)
