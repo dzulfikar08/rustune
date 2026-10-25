@@ -13,8 +13,8 @@ const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012
 /// Standard base64 with padding, appended to `out`.
 pub fn base64(input: &[u8], out: &mut Vec<u8>) {
     out.reserve(input.len().div_ceil(3) * 4);
-    let mut chunks = input.chunks_exact(3);
-    for c in &mut chunks {
+    let (chunks, remainder) = input.as_chunks::<3>();
+    for c in chunks {
         let n = (u32::from(c[0]) << 16) | (u32::from(c[1]) << 8) | u32::from(c[2]);
         out.extend_from_slice(&[
             B64[(n >> 18) as usize & 63],
@@ -23,7 +23,7 @@ pub fn base64(input: &[u8], out: &mut Vec<u8>) {
             B64[n as usize & 63],
         ]);
     }
-    match *chunks.remainder() {
+    match *remainder {
         [a] => {
             let n = u32::from(a) << 16;
             out.extend_from_slice(&[

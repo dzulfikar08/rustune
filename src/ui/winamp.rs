@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::Frame;
 
 use crate::app::{App, LayoutRects, Mode, Status};
@@ -848,6 +848,7 @@ mod tests {
     use super::*;
     use crate::skin::tests::{build_wsz, solid_bmp};
     use crate::winamp::tests::sample_view;
+    use ratatui::style::Color;
 
     fn skin_with_bitmaps() -> WinampSkin {
         let wsz = build_wsz(&[
@@ -865,12 +866,11 @@ mod tests {
         let view = sample_view(PlayStatus::Playing);
         let mut ui = WinampUiState::new();
         let mut gfx = GfxPainter::with_cell_size(Protocol::HalfBlock, None);
-        let mut buf = Buffer::empty(Rect::new(0, 0, 280, 180));
-        gfx.begin_frame(buf.area);
+        let screen = Rect::new(0, 0, 280, 180);
+        let mut buf = Buffer::empty(screen);
+        gfx.begin_frame(screen);
         ui.begin_layout();
-        let rects = render_windows(
-            &mut buf, buf.area, buf.area, &skin, &view, &mut ui, &mut gfx,
-        );
+        let rects = render_windows(&mut buf, screen, screen, &skin, &view, &mut ui, &mut gfx);
         // Main window pixels: MAIN.BMP colour as half-blocks.
         let c = buf.cell(Position::new(2 + 50, 30)).unwrap();
         assert_eq!(c.bg, Color::Rgb(40, 40, 60));
@@ -899,15 +899,12 @@ mod tests {
         let view = sample_view(PlayStatus::Paused);
         let mut ui = WinampUiState::new();
         let mut gfx = GfxPainter::with_cell_size(Protocol::HalfBlock, None);
-        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 24));
-        let rects = render_windows(
-            &mut buf, buf.area, buf.area, &skin, &view, &mut ui, &mut gfx,
-        );
+        let screen = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(screen);
+        let rects = render_windows(&mut buf, screen, screen, &skin, &view, &mut ui, &mut gfx);
         assert_eq!(rects.playlist.y, 6);
         assert_eq!(buf.cell(Position::new(37, 0)).unwrap().symbol(), "W");
-        // Pressing the text "play" button returns Play on release.
-        let p = rects.pause;
-        assert!(p.width > 0);
+        assert!(rects.pause.width > 0);
     }
 
     #[test]
@@ -916,12 +913,11 @@ mod tests {
         let view = sample_view(PlayStatus::Playing);
         let mut ui = WinampUiState::new();
         let mut gfx = GfxPainter::with_cell_size(Protocol::Sixel, Some((10, 20)));
-        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 50));
-        gfx.begin_frame(buf.area);
+        let screen = Rect::new(0, 0, 120, 50);
+        let mut buf = Buffer::empty(screen);
+        gfx.begin_frame(screen);
         ui.begin_layout();
-        let rects = render_windows(
-            &mut buf, buf.area, buf.area, &skin, &view, &mut ui, &mut gfx,
-        );
+        let rects = render_windows(&mut buf, screen, screen, &skin, &view, &mut ui, &mut gfx);
         gfx.end_frame(&buf);
         // Image cells are skipped by ratatui; the seek bar maps inside the main window.
         assert!(

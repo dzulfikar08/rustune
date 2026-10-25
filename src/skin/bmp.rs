@@ -245,7 +245,7 @@ pub fn decode(data: &[u8]) -> Result<Decoded, BmpError> {
                     break;
                 };
                 let dst = &mut out.pixels[y * w..(y + 1) * w];
-                for (px, bgr) in dst.iter_mut().zip(row.chunks_exact(3)) {
+                for (px, bgr) in dst.iter_mut().zip(row.as_chunks::<3>().0) {
                     *px = [bgr[2], bgr[1], bgr[0], 255];
                 }
             }

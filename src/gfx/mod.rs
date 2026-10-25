@@ -401,6 +401,7 @@ impl GfxPainter {
     /// `pixels` (width×height RGBA) upscaled by `scale`, with its top-left at
     /// cell `at`. Returns the covered cells. Covered cells are blanked; for
     /// iTerm2/sixel they are also marked `skip`.
+    #[allow(clippy::too_many_arguments)]
     pub fn place(
         &mut self,
         buf: &mut Buffer,

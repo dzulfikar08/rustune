@@ -197,6 +197,7 @@ impl fmt::Debug for WinampSkin {
         f.debug_struct("WinampSkin")
             .field("name", &self.name)
             .field("author", &self.author)
+            .field("description", &self.description)
             .field("sheets", &loaded)
             .finish_non_exhaustive()
     }
@@ -233,8 +234,9 @@ fn is_text_asset(name: &str) -> bool {
 impl WinampSkin {
     /// Load a skin from a `.wsz` file.
     pub fn from_wsz(path: &Path) -> anyhow::Result<Self> {
-        let file = std::fs::File::open(path)?;
-        Self::from_reader(std::io::BufReader::new(file), &fallback_name(path))
+        // Skins are small; one read beats many seeks through a BufReader.
+        let bytes = std::fs::read(path)?;
+        Self::from_wsz_bytes(&bytes, &fallback_name(path))
     }
 
     /// Load a skin from in-memory `.wsz` bytes.

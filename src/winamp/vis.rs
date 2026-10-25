@@ -87,14 +87,20 @@ impl VisState {
     }
 
     fn step(&mut self, target: &[f32; BARS]) {
-        for i in 0..BARS {
-            self.bars[i] = (self.bars[i] - BAR_FALLOFF).max(target[i]).max(0.0);
-            if self.bars[i] >= self.peaks[i] {
-                self.peaks[i] = self.bars[i];
-                self.peak_speed[i] = PEAK_START_SPEED;
+        let lanes = self
+            .bars
+            .iter_mut()
+            .zip(self.peaks.iter_mut())
+            .zip(self.peak_speed.iter_mut())
+            .zip(target);
+        for (((bar, peak), speed), t) in lanes {
+            *bar = (*bar - BAR_FALLOFF).max(*t).max(0.0);
+            if *bar >= *peak {
+                *peak = *bar;
+                *speed = PEAK_START_SPEED;
             } else {
-                self.peaks[i] = (self.peaks[i] - self.peak_speed[i]).max(0.0);
-                self.peak_speed[i] *= PEAK_ACCEL;
+                *peak = (*peak - *speed).max(0.0);
+                *speed *= PEAK_ACCEL;
             }
         }
     }

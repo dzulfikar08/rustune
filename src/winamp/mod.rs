@@ -108,7 +108,7 @@ pub struct WindowGeom {
 
 impl WindowGeom {
     /// Window pixel under the centre of cell (col, row).
-    pub fn to_px(&self, col: u16, row: u16) -> (f32, f32) {
+    pub fn to_px(self, col: u16, row: u16) -> (f32, f32) {
         (
             (f32::from(col) - f32::from(self.cells.x) + 0.5) * self.px_per_col,
             (f32::from(row) - f32::from(self.cells.y) + 0.5) * self.px_per_row,
@@ -294,7 +294,7 @@ impl WinampUiState {
             pressed: self.pressed,
             seek_preview: self.seek_preview,
             time_remaining: self.time_remaining,
-            blink_on: view.status != PlayStatus::Paused || (t.as_millis() / 1000) % 2 == 0,
+            blink_on: view.status != PlayStatus::Paused || (t.as_millis() / 1000).is_multiple_of(2),
             marquee: &self.marquee,
             marquee_step: (t.as_millis() / MARQUEE_STEP.as_millis()) as u64,
             vis_mode: self.vis_mode,
