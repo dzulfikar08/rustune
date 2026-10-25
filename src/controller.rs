@@ -2216,6 +2216,7 @@ mod tests {
     #[test]
     fn tabs_cycle_through_sources() {
         let (mut ctl, _rx) = controller();
+        ctl.app.library_scanned = true;
         let n = ctl.app.tabs.len();
         assert!(n >= 4, "local, online, radio, podcasts");
         ctl.on_browse_action(BrowseAction::SwitchTab(true));

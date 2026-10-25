@@ -16,7 +16,7 @@ pub mod text;
 
 use std::fmt;
 use std::io::{Read, Seek};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use ratatui::style::Color;
 
