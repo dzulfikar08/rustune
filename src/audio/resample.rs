@@ -531,12 +531,11 @@ mod tests {
     }
 
     #[inline(always)]
-    #[allow(clippy::chunks_exact_to_as_chunks)]
-    fn dot_exact(a: &[f32], b: &[f32]) -> f32 {
-        let mut acc = [0.0f32; LANES];
-        for (x, y) in a.chunks_exact(LANES).zip(b.chunks_exact(LANES)) {
+    fn dot_fma<const N: usize>(a: &[f32], b: &[f32]) -> f32 {
+        let mut acc = [0.0f32; N];
+        for (x, y) in a.as_chunks::<N>().0.iter().zip(b.as_chunks::<N>().0) {
             for ((s, x), y) in acc.iter_mut().zip(x).zip(y) {
-                *s += x * y;
+                *s = x.mul_add(*y, *s);
             }
         }
         acc.iter().sum()
@@ -550,7 +549,7 @@ mod tests {
         let taps = r.taps;
         let mut best = f64::MAX;
         let mut s = 0.0f32;
-        for _ in 0..3 {
+        for _ in 0..5 {
             let t = std::time::Instant::now();
             for i in 0..n {
                 let row = r.row(i % 160);
@@ -568,10 +567,15 @@ mod tests {
     #[test]
     #[ignore = "experiment"]
     fn bench_dot_variants() {
-        time_dot("as_chunks 16", dot);
-        time_dot("chunks_exact 16", dot_exact);
-        time_dot("as_chunks 8", dot_n::<8>);
-        time_dot("as_chunks 32", dot_n::<32>);
-        time_dot("as_chunks 16 again", dot);
+        time_dot("plain 16", dot);
+        time_dot("plain 8", dot_n::<8>);
+        time_dot("plain 4", dot_n::<4>);
+        if cfg!(target_arch = "aarch64") {
+            time_dot("fma 16", dot_fma::<16>);
+            time_dot("fma 8", dot_fma::<8>);
+            time_dot("fma 4", dot_fma::<4>);
+        }
+        time_dot("plain 16 again", dot);
+        time_dot("plain 8 again", dot_n::<8>);
     }
 }
