@@ -1,0 +1,17 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.10.0.schema.json
+
+PackageIdentifier: dzulfikar08.rustune
+PackageVersion: 0.3.6
+InstallerType: portable
+Commands:
+- rustune
+ReleaseDate: 2026-10-25
+Dependencies:
+  PackageDependencies:
+  - PackageIdentifier: Microsoft.VCRedist.2015+.x64
+Installers:
+- Architecture: x64
+  InstallerUrl: https://github.com/dzulfikar08/rustune/releases/download/v0.3.6/rustune-x86_64-windows.exe
+  InstallerSha256: 1D5F9E48FDF171D4DBAFEE2A5B80D7459EDE415C69D9ECFFDB1A889B78F855F2
+ManifestType: installer
+ManifestVersion: 1.10.0

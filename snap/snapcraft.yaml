@@ -1,0 +1,95 @@
+name: rustune
+title: rustune
+base: core24
+adopt-info: rustune
+summary: Terminal music player with radio, podcasts and Winamp skins
+description: |
+  A lightweight terminal music player: native Rust audio engine, visualizer,
+  synced lyrics, Internet radio, podcasts, Subsonic and Jellyfin, and
+  pixel-accurate Winamp skins, all in your terminal.
+
+  The snap is strictly confined. It plays local files from your home folder
+  and removable media (connect `removable-media` with
+  `sudo snap connect rustune:removable-media`) and streams over the network.
+  Audio goes through PulseAudio or PipeWire. Online search (yt-dlp) and the
+  ffmpeg fallback for exotic formats are not available in the snap, because
+  a strict snap cannot run tools installed on the host; use another install
+  method if you need them.
+license: MIT
+website: https://rustune.dzulfikar.com
+source-code: https://github.com/dzulfikar08/rustune
+issues: https://github.com/dzulfikar08/rustune/issues
+contact: https://github.com/dzulfikar08/rustune/issues
+grade: stable
+confinement: strict
+
+platforms:
+  amd64:
+  arm64:
+
+# alsa-lib loads its PulseAudio plugin from these fixed paths.
+layout:
+  /usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/alsa-lib:
+    bind: $SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/alsa-lib
+  /usr/share/alsa:
+    bind: $SNAP/usr/share/alsa
+
+apps:
+  rustune:
+    command: bin/rustune
+    command-chain: [bin/pulse-launch]
+    environment:
+      ALSA_CONFIG_PATH: $SNAP/etc/asound.conf
+      LD_LIBRARY_PATH: $SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR:$SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/pulseaudio
+    plugs: [audio-playback, network, home, removable-media]
+    slots: [mpris]
+
+slots:
+  mpris:
+    interface: mpris
+    name: rustune
+
+parts:
+  rustune:
+    plugin: rust
+    source: .
+    build-packages: [libasound2-dev, pkg-config]
+    stage-packages: [libasound2t64, libasound2-data, libasound2-plugins]
+    override-pull: |
+      craftctl default
+      craftctl set version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+    # libasound2-plugins drags in ffmpeg, jack and more for plugins rustune
+    # never loads; keep alsa-lib, its PulseAudio plugin and libpulse's deps.
+    prime:
+      - bin/rustune
+      - usr/share/alsa
+      - usr/lib/*/libasound.so.2*
+      - usr/lib/*/alsa-lib/libasound_module_pcm_pulse.so
+      - usr/lib/*/alsa-lib/libasound_module_ctl_pulse.so
+      - usr/lib/*/libpulse.so.0*
+      - usr/lib/*/pulseaudio
+      - usr/lib/*/libsndfile.so.1*
+      - usr/lib/*/libFLAC.so.*
+      - usr/lib/*/libvorbis.so.*
+      - usr/lib/*/libvorbisenc.so.*
+      - usr/lib/*/libogg.so.*
+      - usr/lib/*/libopus.so.*
+      - usr/lib/*/libmpg123.so.*
+      - usr/lib/*/libmp3lame.so.*
+      - usr/lib/*/libasyncns.so.*
+      - usr/lib/*/libX11.so.*
+      - usr/lib/*/libX11-xcb.so.*
+      - usr/lib/*/libxcb.so.*
+      - usr/lib/*/libXau.so.*
+      - usr/lib/*/libXdmcp.so.*
+      - usr/lib/*/libbsd.so.*
+      - usr/lib/*/libmd.so.*
+
+  # ALSA config that routes the default device to PulseAudio, and the
+  # launcher that points libpulse at the host's socket.
+  audio:
+    plugin: dump
+    source: snap/local
+    organize:
+      asound.conf: etc/asound.conf
+      pulse-launch: bin/pulse-launch

@@ -1,0 +1,9 @@
+#!/bin/sh
+# Inside the snap XDG_RUNTIME_DIR is /run/user/<uid>/snap.rustune, so libpulse
+# would miss the host's /run/user/<uid>/pulse/native socket that the
+# audio-playback interface grants. Point it there.
+if [ -z "${PULSE_SERVER:-}" ] && [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -S "$XDG_RUNTIME_DIR/../pulse/native" ]; then
+    PULSE_SERVER="unix:$XDG_RUNTIME_DIR/../pulse/native"
+    export PULSE_SERVER
+fi
+exec "$@"

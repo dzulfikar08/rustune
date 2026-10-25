@@ -1,0 +1,46 @@
+# Maintainer: Dzulfikar Ats Tsauri <dzulfikar.at@gmail.com>
+#
+# The release workflow bumps pkgver and the checksum and pushes this file to
+# the AUR (see packaging/README.md).
+
+pkgname=rustune
+pkgver=0.3.6
+pkgrel=1
+pkgdesc='Terminal music player with online search, radio, podcasts and Winamp skins'
+arch=('x86_64' 'aarch64')
+url='https://github.com/dzulfikar08/rustune'
+license=('MIT')
+depends=('alsa-lib' 'glibc' 'libgcc')
+makedepends=('cargo')
+optdepends=('yt-dlp: online search and streaming'
+            'ffmpeg: exotic formats and HLS streams')
+# The release profile already does fat LTO and strips the binary.
+options=('!lto' '!debug')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('f9d087ec2d72ab32455760d35a3340a02035d621a4128437ad60a1fcb7a44dfa')
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --frozen
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 target/release/rustune "$pkgdir/usr/bin/rustune"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

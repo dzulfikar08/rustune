@@ -1,0 +1,20 @@
+pkgbase = rustune
+	pkgdesc = Terminal music player with online search, radio, podcasts and Winamp skins
+	pkgver = 0.3.6
+	pkgrel = 1
+	url = https://github.com/dzulfikar08/rustune
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	makedepends = cargo
+	depends = alsa-lib
+	depends = glibc
+	depends = libgcc
+	optdepends = yt-dlp: online search and streaming
+	optdepends = ffmpeg: exotic formats and HLS streams
+	options = !lto
+	options = !debug
+	source = rustune-0.3.6.tar.gz::https://github.com/dzulfikar08/rustune/archive/refs/tags/v0.3.6.tar.gz
+	sha256sums = f9d087ec2d72ab32455760d35a3340a02035d621a4128437ad60a1fcb7a44dfa
+
+pkgname = rustune

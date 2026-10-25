@@ -1,0 +1,128 @@
+name: Snap
+
+# Builds the snap from source, installs it and plays a tone through a
+# PulseAudio null sink. Also called by release.yml, which publishes the
+# snap-<arch> artifacts when SNAPCRAFT_STORE_CREDENTIALS is set.
+on:
+  push:
+    branches: ["**"]
+    paths: ["snap/**", "Cargo.toml", "Cargo.lock", ".github/workflows/snap.yml"]
+  pull_request:
+    paths: ["snap/**", "Cargo.toml", "Cargo.lock", ".github/workflows/snap.yml"]
+  workflow_dispatch:
+  workflow_call:
+
+jobs:
+  snap:
+    name: snap (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: snapcore/action-build@v1
+        id: build
+
+      - name: Install the snap
+        run: |
+          ls -l ${{ steps.build.outputs.snap }}
+          sudo snap install --dangerous ${{ steps.build.outputs.snap }}
+          snap connections rustune
+          grep -A8 '^apps:' /snap/rustune/current/meta/snap.yaml
+          # Every library the binary and the PulseAudio plugin need must
+          # resolve inside the snap (or its core24 base).
+          snap run --shell rustune -c 'ldd "$SNAP/bin/rustune" "$SNAP"/usr/lib/*/alsa-lib/*.so "$SNAP"/usr/lib/*/libpulse.so.0' | tee ldd.txt
+          ! grep 'not found' ldd.txt
+      - name: rustune --version / --help / doctor
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          out=$(rustune --version)
+          echo "$out"
+          test "$out" = "rustune $version"
+          rustune --help > help.txt && grep -q USAGE help.txt
+
+      - name: Play a tone through PulseAudio
+        run: |
+          sudo apt-get update && sudo apt-get install -y pulseaudio pulseaudio-utils
+          XDG_RUNTIME_DIR=/run/user/$(id -u)
+          export XDG_RUNTIME_DIR
+          sudo mkdir -p "$XDG_RUNTIME_DIR"
+          sudo chown "$(id -u):$(id -g)" "$XDG_RUNTIME_DIR"
+          sudo chmod 700 "$XDG_RUNTIME_DIR"
+          pulseaudio --daemonize=yes --exit-idle-time=-1 --log-target=stderr
+          pactl load-module module-null-sink sink_name=ci
+          pactl set-default-sink ci
+          pactl info
+
+          rustune doctor | tee doctor.txt
+          grep -q '\[ok\] audio output' doctor.txt
+
+          # The home plug covers non-hidden files in $HOME; the snap's own
+          # config lives under ~/snap/rustune/current.
+          mkdir -p "$HOME/snap-test" "$HOME/snap/rustune/current/.config/rustune"
+          printf 'onboarding_done = true\nmusic_dir = "%s"\n' "$HOME/snap-test" \
+            > "$HOME/snap/rustune/current/.config/rustune/config.toml"
+          python3 - "$HOME/snap-test/tone.wav" <<'EOF'
+          import fcntl, math, os, struct, subprocess, sys, termios, threading, time, wave
+
+          wav = sys.argv[1]
+          rate = 44100
+          with wave.open(wav, "wb") as w:
+              w.setnchannels(2)
+              w.setsampwidth(2)
+              w.setframerate(rate)
+              frames = bytearray()
+              for i in range(rate * 10):
+                  s = int(12000 * math.sin(2 * math.pi * 440 * i / rate))
+                  frames += struct.pack("<hh", s, s)
+              w.writeframes(bytes(frames))
+
+          master, slave = os.openpty()
+          fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+          env = dict(os.environ, TERM="xterm-256color")
+          proc = subprocess.Popen(["rustune", wav], stdin=slave, stdout=slave, stderr=slave,
+                                  env=env, start_new_session=True)
+          os.close(slave)
+          out = bytearray()
+          def drain():
+              while True:
+                  try:
+                      chunk = os.read(master, 65536)
+                  except OSError:
+                      break
+                  if not chunk:
+                      break
+                  out.extend(chunk)
+          threading.Thread(target=drain, daemon=True).start()
+
+          inputs = ""
+          for _ in range(20):
+              time.sleep(0.5)
+              inputs = subprocess.run(["pactl", "list", "short", "sink-inputs"],
+                                      capture_output=True, text=True).stdout.strip()
+              if inputs:
+                  break
+          print("sink inputs:", inputs or "(none)")
+          os.write(master, b"q")
+          try:
+              proc.wait(timeout=10)
+          except subprocess.TimeoutExpired:
+              proc.kill()
+          if not inputs:
+              print(bytes(out[-4096:]).decode("utf-8", errors="replace"))
+              sys.exit("rustune did not open a PulseAudio stream")
+          print("rustune played through PulseAudio")
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: snap-${{ matrix.arch }}
+          path: ${{ steps.build.outputs.snap }}
+          if-no-files-found: error
