@@ -1517,8 +1517,8 @@ impl Controller {
                 if kind == ProviderKind::Jellyfin {
                     if let Some((token, user_id)) = self.services.jellyfin_session() {
                         if let Some(jf) = self.app.config.providers.jellyfin.as_mut() {
-                            jf.token = token;
-                            jf.user_id = user_id;
+                            jf.token = Some(token);
+                            jf.user_id = Some(user_id);
                             self.save_config();
                         }
                     }
