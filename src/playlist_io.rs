@@ -328,7 +328,8 @@ mod tests {
         let text = decode(bytes);
         let e = parse_m3u(&text, Some(Path::new("/music/lists")));
         assert_eq!(e.len(), 2);
-        assert_eq!(e[0].location, "/music/lists/sub/song.mp3");
+        let joined = Path::new("/music/lists").join("sub/song.mp3");
+        assert_eq!(e[0].location, joined.to_string_lossy());
         assert_eq!(e[0].title.as_deref(), Some("Artist - Song"));
         assert_eq!(e[0].duration, Some(215));
         assert_eq!(e[1].location, "/abs/other.flac");
@@ -366,7 +367,10 @@ mod tests {
         let text = "[playlist]\r\nNumberOfEntries=2\r\nFile2=http://s.example/2\r\nTitle2=Two\r\nfile1=one.ogg\r\nLength1=61\r\nLength2=-1\r\nVersion=2\r\n";
         let e = parse_pls(text, Some(Path::new("/p")));
         assert_eq!(e.len(), 2);
-        assert_eq!(e[0].location, "/p/one.ogg");
+        assert_eq!(
+            e[0].location,
+            Path::new("/p").join("one.ogg").to_string_lossy()
+        );
         assert_eq!(e[0].duration, Some(61));
         assert_eq!(e[0].title, None);
         assert_eq!(e[1].location, "http://s.example/2");
