@@ -34,10 +34,6 @@ impl Fft {
         Self { n, rev, cos, sin }
     }
 
-    pub fn size(&self) -> usize {
-        self.n
-    }
-
     /// Forward transform (`e^{-2πi kn/N}` kernel, unnormalized) in place.
     /// `re` and `im` must both have length `size()`.
     pub fn forward(&self, re: &mut [f32], im: &mut [f32]) {

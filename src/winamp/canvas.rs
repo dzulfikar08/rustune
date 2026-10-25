@@ -13,6 +13,7 @@ pub struct Canvas {
 }
 
 impl Canvas {
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::default()
     }

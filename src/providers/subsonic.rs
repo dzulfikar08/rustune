@@ -242,10 +242,6 @@ impl SubsonicClient {
         }
     }
 
-    pub fn base_url(&self) -> &str {
-        &self.base
-    }
-
     /// Full authenticated URL for `endpoint` with a fresh salt.
     pub fn url(&self, endpoint: &str, params: &[(&str, &str)]) -> String {
         self.url_with_salt(endpoint, params, &new_salt())
@@ -290,15 +286,6 @@ impl SubsonicClient {
         self.url_with_salt("stream", &params, salt)
     }
 
-    /// Cover art URL for an album/song `coverArt` ID.
-    pub fn cover_art_url(&self, cover_id: &str, size: Option<u32>) -> String {
-        let size = size.map(|s| s.to_string());
-        match size.as_deref() {
-            Some(size) => self.url("getCoverArt", &[("id", cover_id), ("size", size)]),
-            None => self.url("getCoverArt", &[("id", cover_id)]),
-        }
-    }
-
     /// Song ID of an item produced by this client (parsed from its stream
     /// URL), for scrobbling and starring.
     pub fn song_id(&self, item: &MediaItem) -> Option<String> {
@@ -309,6 +296,7 @@ impl SubsonicClient {
         query_param(&item.id, "id").filter(|id| !id.is_empty())
     }
 
+    #[cfg(test)]
     /// Checks reachability and credentials.
     pub fn ping(&self, agent: &Agent) -> Result<()> {
         self.call::<IgnoredAny>(agent, "ping", &[]).map(|_| ())
@@ -469,16 +457,6 @@ impl SubsonicClient {
             params.push(("time", time.as_str()));
         }
         self.call::<IgnoredAny>(agent, "scrobble", &params)
-            .map(|_| ())
-    }
-
-    pub fn star(&self, agent: &Agent, song_id: &str) -> Result<()> {
-        self.call::<IgnoredAny>(agent, "star", &[("id", song_id)])
-            .map(|_| ())
-    }
-
-    pub fn unstar(&self, agent: &Agent, song_id: &str) -> Result<()> {
-        self.call::<IgnoredAny>(agent, "unstar", &[("id", song_id)])
             .map(|_| ())
     }
 

@@ -355,28 +355,6 @@ impl WinampSkin {
             colors: SkinColors::DEFAULT,
         }
     }
-
-    /// All `.wsz` files in the skins directory, sorted. Never panics.
-    pub fn available_skins() -> Vec<PathBuf> {
-        let skin_dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("~/.config"))
-            .join("rustune")
-            .join("skins");
-        let Ok(entries) = std::fs::read_dir(&skin_dir) else {
-            return Vec::new();
-        };
-        let mut skins: Vec<PathBuf> = entries
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| {
-                p.extension()
-                    .and_then(|e| e.to_str())
-                    .is_some_and(|e| e.eq_ignore_ascii_case("wsz"))
-            })
-            .collect();
-        skins.sort();
-        skins
-    }
 }
 
 fn fallback_name(path: &Path) -> String {

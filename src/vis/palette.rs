@@ -77,6 +77,7 @@ impl VisPalette {
         }
     }
 
+    #[cfg(test)]
     /// Ramp from `low` through `mid` to `high`. RGB stops are interpolated;
     /// indexed/named colours switch at the thirds.
     pub fn from_stops(low: Color, mid: Color, high: Color) -> Self {
@@ -114,6 +115,7 @@ impl VisPalette {
     }
 }
 
+#[cfg(test)]
 fn lerp(a: Color, b: Color, t: f32) -> Color {
     match (a, b) {
         (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) => {

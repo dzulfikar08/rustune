@@ -108,7 +108,9 @@ impl AnalyzerConfig {
 /// How one output band is derived from FFT bins.
 #[derive(Debug, Clone, Copy, Default)]
 struct Band {
+    #[cfg(test)]
     lo_hz: f32,
+    #[cfg(test)]
     hi_hz: f32,
     /// Integer bins `start..end` inside the band. Empty when the band is
     /// narrower than a bin; `center` is then interpolated instead.
@@ -130,6 +132,7 @@ pub struct HistoryView<'a> {
 }
 
 impl<'a> HistoryView<'a> {
+    #[cfg(test)]
     /// Contiguous rows of `bands` values each, newest first.
     pub fn from_rows(rows: &'a [f32], bands: usize) -> Self {
         let len = rows.len().checked_div(bands).unwrap_or(0);
@@ -141,10 +144,12 @@ impl<'a> HistoryView<'a> {
         }
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.len
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -224,14 +229,12 @@ impl Analyzer {
         a
     }
 
-    pub fn config(&self) -> &AnalyzerConfig {
-        &self.cfg
-    }
-
+    #[cfg(test)]
     pub fn bands(&self) -> usize {
         self.cfg.bands
     }
 
+    #[cfg(test)]
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
@@ -271,6 +274,7 @@ impl Analyzer {
         self.idle
     }
 
+    #[cfg(test)]
     /// Frequency range `(lo, hi)` in Hz covered by band `i`.
     pub fn band_range_hz(&self, i: usize) -> Option<(f32, f32)> {
         self.map.get(i).map(|b| (b.lo_hz, b.hi_hz))
@@ -308,24 +312,6 @@ impl Analyzer {
         self.cfg.scope_len = len;
         self.scope.clear();
         self.scope.resize(len, 0.0);
-    }
-
-    /// Drop all levels and history immediately (e.g. on stop).
-    pub fn reset(&mut self) {
-        for v in [
-            &mut self.target,
-            &mut self.spectrum,
-            &mut self.peaks,
-            &mut self.peak_origin,
-            &mut self.peak_time,
-            &mut self.hist_acc,
-            &mut self.scope,
-        ] {
-            v.fill(0.0);
-        }
-        self.hist_len = 0;
-        self.hist_timer = 0.0;
-        self.idle = true;
     }
 
     /// Advance the analyzer by `dt`. While `playing`, the latest window is
@@ -402,7 +388,9 @@ impl Analyzer {
             }
             let center_hz = (lo_hz * hi_hz).sqrt();
             *b = Band {
+                #[cfg(test)]
                 lo_hz,
+                #[cfg(test)]
                 hi_hz,
                 start,
                 end: end.max(start),

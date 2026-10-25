@@ -9,7 +9,6 @@ pub const PROBE_INTERVAL: Duration = Duration::from_millis(250);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FramePacer {
     fps: u32,
-    low_power: bool,
 }
 
 impl Default for FramePacer {
@@ -23,37 +22,11 @@ impl FramePacer {
     pub fn new(fps: u32) -> Self {
         Self {
             fps: fps.clamp(1, 120),
-            low_power: false,
-        }
-    }
-
-    pub fn fps(&self) -> u32 {
-        self.fps
-    }
-
-    pub fn set_fps(&mut self, fps: u32) {
-        self.fps = fps.clamp(1, 120);
-    }
-
-    pub fn low_power(&self) -> bool {
-        self.low_power
-    }
-
-    /// Low-power mode halves every rate.
-    pub fn set_low_power(&mut self, on: bool) {
-        self.low_power = on;
-    }
-
-    pub fn effective_fps(&self) -> u32 {
-        if self.low_power {
-            (self.fps / 2).max(1)
-        } else {
-            self.fps
         }
     }
 
     pub fn frame_interval(&self) -> Duration {
-        Duration::from_secs(1) / self.effective_fps()
+        Duration::from_secs(1) / self.fps
     }
 
     /// Desired redraw interval for the visualizer, or `None` when it needs no
@@ -65,7 +38,6 @@ impl FramePacer {
         }
         match (playing, idle) {
             (_, false) => Some(self.frame_interval()),
-            (true, true) if self.low_power => Some(PROBE_INTERVAL * 2),
             (true, true) => Some(PROBE_INTERVAL),
             (false, true) => None,
         }
@@ -104,21 +76,12 @@ mod tests {
     }
 
     #[test]
-    fn low_power_halves_rates() {
-        let mut p = FramePacer::new(30);
-        p.set_low_power(true);
-        assert_eq!(p.effective_fps(), 15);
+    fn fps_is_clamped() {
+        assert_eq!(FramePacer::new(0).frame_interval(), Duration::from_secs(1));
         assert_eq!(
-            p.interval(true, true, false),
-            Some(Duration::from_secs(1) / 15)
+            FramePacer::new(1000).frame_interval(),
+            Duration::from_secs(1) / 120
         );
-        assert_eq!(p.interval(true, true, true), Some(PROBE_INTERVAL * 2));
-        assert_eq!(FramePacer::new(1).effective_fps(), 1);
-        let mut low = FramePacer::new(1);
-        low.set_low_power(true);
-        assert_eq!(low.effective_fps(), 1);
-        assert_eq!(FramePacer::new(0).fps(), 1);
-        assert_eq!(FramePacer::new(1000).fps(), 120);
     }
 
     #[test]

@@ -43,6 +43,7 @@ pub struct Lyrics {
 }
 
 impl Lyrics {
+    #[cfg(test)]
     /// Interprets `text` as LRC; text without timestamps becomes `plain`.
     pub fn from_text(text: &str) -> Self {
         let synced = parse_lrc(text);

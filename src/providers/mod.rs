@@ -115,11 +115,6 @@ impl ProviderKind {
             Self::Jellyfin => "Jellyfin",
         }
     }
-
-    /// Whether the provider needs a user-configured server and credentials.
-    pub fn needs_server(self) -> bool {
-        matches!(self, Self::Subsonic | Self::Jellyfin)
-    }
 }
 
 impl fmt::Display for ProviderKind {

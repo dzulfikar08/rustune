@@ -170,7 +170,7 @@ pub enum Entry {
 impl Entry {
     pub fn label(&self) -> &str {
         match self {
-            Self::Menu { label, .. } => *label,
+            Self::Menu { label, .. } => label,
             Self::Folder { label, .. } => label.as_str(),
             Self::Search => "Search…",
             Self::Subscriptions => "Subscriptions",

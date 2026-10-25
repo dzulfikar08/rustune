@@ -124,11 +124,7 @@ impl Tracker {
                 vec![Call::SubsonicSubmit(song_id.clone())]
             }
             Target::Jellyfin { item_id } => {
-                let moved = if elapsed >= self.reported_pos {
-                    elapsed - self.reported_pos
-                } else {
-                    self.reported_pos - elapsed
-                };
+                let moved = elapsed.abs_diff(self.reported_pos);
                 if paused == self.paused && moved < JELLYFIN_INTERVAL {
                     return Vec::new();
                 }

@@ -111,6 +111,7 @@ impl RangeReader {
         }
     }
 
+    #[cfg(test)]
     /// Open `url` at offset 0 and verify the server honours ranges.
     pub fn open(url: &str) -> io::Result<Self> {
         let mut r = Self {

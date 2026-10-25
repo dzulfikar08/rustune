@@ -88,6 +88,7 @@ pub struct Episode {
 }
 
 impl Feed {
+    #[cfg(test)]
     /// Episodes as playable items, newest first.
     pub fn media_items(&self) -> Vec<MediaItem> {
         self.episodes

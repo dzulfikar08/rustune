@@ -55,8 +55,6 @@ pub enum StationOrder {
     Votes,
     Clicks,
     Trend,
-    Name,
-    Random,
 }
 
 impl StationOrder {
@@ -65,14 +63,7 @@ impl StationOrder {
             Self::Votes => "votes",
             Self::Clicks => "clickcount",
             Self::Trend => "clicktrend",
-            Self::Name => "name",
-            Self::Random => "random",
         }
-    }
-
-    /// Biggest numbers first; names ascend and random has no direction.
-    fn descending(self) -> bool {
-        !matches!(self, Self::Name | Self::Random)
     }
 }
 
@@ -114,13 +105,6 @@ impl StationQuery {
         }
     }
 
-    pub fn top(order: StationOrder) -> Self {
-        Self {
-            order,
-            ..Self::default()
-        }
-    }
-
     /// Query string (without `?`). Broken stations are always hidden.
     pub fn to_query_string(&self) -> String {
         let limit = if self.limit == 0 {
@@ -138,11 +122,10 @@ impl StationQuery {
                 ("offset", offset.as_str()),
                 ("order", self.order.as_str()),
                 ("hidebroken", "true"),
+                // Every order is "biggest first".
+                ("reverse", "true"),
             ],
         );
-        if self.order.descending() {
-            push_query(&mut q, [("reverse", "true")]);
-        }
         if let Some(name) = self
             .name
             .as_deref()
@@ -277,6 +260,7 @@ impl RadioClient {
         }
     }
 
+    #[cfg(test)]
     pub fn base_url(&self) -> &str {
         &self.base
     }
@@ -604,7 +588,7 @@ mod tests {
              &tag=80s&tagExact=true&countrycode=DE"
         );
         let q = StationQuery {
-            order: StationOrder::Name,
+            order: StationOrder::Trend,
             limit: 10,
             offset: 20,
             country_code: Some("Germany".into()),
@@ -612,7 +596,7 @@ mod tests {
         };
         assert_eq!(
             q.to_query_string(),
-            "limit=10&offset=20&order=name&hidebroken=true"
+            "limit=10&offset=20&order=clicktrend&hidebroken=true&reverse=true"
         );
     }
 

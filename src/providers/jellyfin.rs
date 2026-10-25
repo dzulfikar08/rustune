@@ -121,6 +121,7 @@ pub struct Playlist {
 }
 
 /// `/System/Info/Public`.
+#[cfg(test)]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct ServerInfo {
@@ -312,6 +313,7 @@ impl JellyfinClient {
         Ok(client)
     }
 
+    #[cfg(test)]
     /// Session from a saved token and user ID (no network).
     pub fn with_session(
         base_url: &str,
@@ -331,10 +333,6 @@ impl JellyfinClient {
         }
     }
 
-    pub fn base_url(&self) -> &str {
-        &self.base
-    }
-
     /// Session token: store it (e.g. as `JellyfinConfig::token`) instead of
     /// the password.
     pub fn token(&self) -> &str {
@@ -345,6 +343,7 @@ impl JellyfinClient {
         &self.user_id
     }
 
+    #[cfg(test)]
     /// Unauthenticated server identity, usable as a reachability check.
     pub fn server_info(&self, agent: &Agent) -> Result<ServerInfo> {
         self.get_json(agent, "/System/Info/Public", &[])
@@ -502,6 +501,7 @@ impl JellyfinClient {
         url
     }
 
+    #[cfg(test)]
     /// Original file download, for servers whose universal endpoint
     /// misbehaves. Same secrecy caveat as [`stream_url`](Self::stream_url).
     pub fn download_url(&self, item_id: &str) -> String {

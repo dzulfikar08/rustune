@@ -253,6 +253,7 @@ pub const PL_ROW_STEP: u32 = 29;
 pub const PL_LEFT_W: u32 = 12;
 pub const PL_RIGHT_W: u32 = 20;
 /// Track rows in Winamp are 13px tall.
+#[cfg(test)]
 pub const PL_TRACK_H: u32 = 13;
 
 /// Playlist positions that depend on the window height `h` (width is 275).

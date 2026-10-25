@@ -72,6 +72,7 @@ impl Ring {
         self.mask + 1
     }
 
+    #[cfg(test)]
     pub fn channels(&self) -> usize {
         self.channels
     }
