@@ -1,4 +1,5 @@
 name: rustune
+title: rustune
 base: core24
 adopt-info: rustune
 summary: Terminal music player with radio, podcasts and Winamp skins
@@ -18,6 +19,7 @@ license: MIT
 website: https://rustune.dzulfikar.com
 source-code: https://github.com/dzulfikar08/rustune
 issues: https://github.com/dzulfikar08/rustune/issues
+contact: https://github.com/dzulfikar08/rustune/issues
 grade: stable
 confinement: strict
 
