@@ -520,53 +520,58 @@ mod tests {
     }
 
     #[inline(always)]
-    fn dot2(c: &[f32], l: &[f32], r: &[f32]) -> (f32, f32) {
-        let (mut al, mut ar) = ([0.0f32; LANES], [0.0f32; LANES]);
-        for ((c, l), r) in c
-            .as_chunks::<LANES>()
-            .0
-            .iter()
-            .zip(l.as_chunks::<LANES>().0)
-            .zip(r.as_chunks::<LANES>().0)
-        {
-            for (((sl, sr), c), (l, r)) in
-                al.iter_mut().zip(ar.iter_mut()).zip(c).zip(l.iter().zip(r))
-            {
-                *sl += c * l;
-                *sr += c * r;
+    fn dot_n<const N: usize>(a: &[f32], b: &[f32]) -> f32 {
+        let mut acc = [0.0f32; N];
+        for (x, y) in a.as_chunks::<N>().0.iter().zip(b.as_chunks::<N>().0) {
+            for ((s, x), y) in acc.iter_mut().zip(x).zip(y) {
+                *s += x * y;
             }
         }
-        (al.iter().sum(), ar.iter().sum())
+        acc.iter().sum()
     }
 
-    #[test]
-    #[ignore = "experiment"]
-    fn bench_dot_variants() {
+    #[inline(always)]
+    #[allow(clippy::chunks_exact_to_as_chunks)]
+    fn dot_exact(a: &[f32], b: &[f32]) -> f32 {
+        let mut acc = [0.0f32; LANES];
+        for (x, y) in a.chunks_exact(LANES).zip(b.chunks_exact(LANES)) {
+            for ((s, x), y) in acc.iter_mut().zip(x).zip(y) {
+                *s += x * y;
+            }
+        }
+        acc.iter().sum()
+    }
+
+    fn time_dot(name: &str, f: impl Fn(&[f32], &[f32]) -> f32) {
         let r = Resampler::new(44_100, 48_000, 2);
         let l: Vec<f32> = (0..8192).map(|i| (i as f32 * 0.01).sin()).collect();
         let rr: Vec<f32> = (0..8192).map(|i| (i as f32 * 0.013).cos()).collect();
         let n = 48_000 * 60;
         let taps = r.taps;
-        let t = std::time::Instant::now();
+        let mut best = f64::MAX;
         let mut s = 0.0f32;
-        for i in 0..n {
-            let row = r.row(i % 160);
-            let f = std::hint::black_box(i % 8000);
-            s += dot(row, &l[f..f + taps]) + dot(row, &rr[f..f + taps]);
+        for _ in 0..3 {
+            let t = std::time::Instant::now();
+            for i in 0..n {
+                let row = r.row(i % 160);
+                let p = std::hint::black_box(i % 8000);
+                s += f(row, &l[p..p + taps]) + f(row, &rr[p..p + taps]);
+            }
+            best = best.min(t.elapsed().as_secs_f64());
         }
-        let a = t.elapsed();
-        let t = std::time::Instant::now();
-        for i in 0..n {
-            let row = r.row(i % 160);
-            let f = std::hint::black_box(i % 8000);
-            let (x, y) = dot2(row, &l[f..f + taps], &rr[f..f + taps]);
-            s += x + y;
-        }
-        let b = t.elapsed();
         println!(
-            "bench dot: per channel {:.1} ns/frame, stereo {:.1} ns/frame ({s})",
-            a.as_secs_f64() * 1e9 / n as f64,
-            b.as_secs_f64() * 1e9 / n as f64
+            "bench dot {name}: {:.1} ns/frame ({s})",
+            best * 1e9 / n as f64
         );
+    }
+
+    #[test]
+    #[ignore = "experiment"]
+    fn bench_dot_variants() {
+        time_dot("as_chunks 16", dot);
+        time_dot("chunks_exact 16", dot_exact);
+        time_dot("as_chunks 8", dot_n::<8>);
+        time_dot("as_chunks 32", dot_n::<32>);
+        time_dot("as_chunks 16 again", dot);
     }
 }
