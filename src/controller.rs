@@ -155,36 +155,40 @@ fn as_entries(items: Vec<MediaItem>) -> Vec<Entry> {
 /// Find the skin `spec` names (installed name, `.wsz` path or Winamp Skin
 /// Museum md5), installing it into the skins directory when needed.
 fn install_skin(spec: &str) -> Result<PathBuf> {
-    let dir = config::skins_dir();
+    install_skin_in(&config::skins_dir(), spec)
+}
+
+fn install_skin_in(dir: &Path, spec: &str) -> Result<PathBuf> {
     let path = Path::new(spec);
     if path.is_file() {
         let name = path
             .file_name()
             .ok_or_else(|| anyhow::anyhow!("Invalid skin file name"))?;
         let dest = dir.join(name);
-        if path.parent() != Some(dir.as_path()) {
-            std::fs::create_dir_all(&dir)?;
+        if path.parent() != Some(dir) {
+            std::fs::create_dir_all(dir)?;
             std::fs::copy(path, &dest)
                 .map_err(|e| anyhow::anyhow!("Copying {spec} to {}: {e}", dest.display()))?;
         }
         return Ok(dest);
     }
-    let installed = net::list_skins(&dir);
+    if net::is_skin_md5(spec) {
+        let md5 = spec.to_ascii_lowercase();
+        // Already installed under any name (e.g. the base skin): no download.
+        if let Some(found) = net::installed_skin_with_md5(dir, &md5) {
+            return Ok(found);
+        }
+        let museum_name = net::fetch_skin_filename(&md5)?;
+        let filename = net::unused_skin_filename(dir, &museum_name, &md5);
+        return PreviewCache::user().install(&md5, &filename, dir, net::fetch_skin_bytes);
+    }
+    let installed = net::list_skins(dir);
     let wanted = spec.strip_suffix(".wsz").unwrap_or(spec);
     if let Some(found) = installed.iter().find(|p| {
         p.file_stem()
             .is_some_and(|stem| stem.to_string_lossy().eq_ignore_ascii_case(wanted))
     }) {
         return Ok(found.clone());
-    }
-    if net::is_skin_md5(spec) {
-        let md5 = spec.to_ascii_lowercase();
-        return PreviewCache::user().install(
-            &md5,
-            &format!("{md5}.wsz"),
-            &dir,
-            net::fetch_skin_bytes,
-        );
     }
     let names: Vec<String> = installed
         .iter()
@@ -3458,5 +3462,21 @@ mod tests {
         let lyrics: LyricsReply = reply(&answer);
         assert!(!lyrics.found);
         assert_eq!(lyrics.message.as_deref(), Some("nothing is playing"));
+    }
+
+    #[test]
+    fn skin_md5_already_installed_by_content_is_reused() {
+        let dir = std::env::temp_dir().join(format!("rt-skin-md5-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let base = dir.join("base-2.91.wsz");
+        std::fs::write(&base, b"abc").unwrap();
+        // md5("abc"): the same bytes under another name; no download, no copy.
+        let found = install_skin_in(&dir, "900150983CD24FB0D6963F7D28E17F72").unwrap();
+        assert_eq!(found, base);
+        assert_eq!(net::list_skins(&dir), vec![base.clone()]);
+        // Installed names still work, case-insensitively.
+        assert_eq!(install_skin_in(&dir, "BASE-2.91").unwrap(), base);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -111,7 +111,7 @@ REMOTE CONTROL (talks to the running player or daemon; exits 1 if none runs):
     {program} vis MODE|next|list           Visualizer: bars, braille, led, mirror, scope,
                                            spectrogram, fire, none
     {program} skin NAME|MD5|FILE.wsz       Apply a Winamp skin (installed name, Skin
-                                           Museum md5 to download, or a file)
+                                           Museum md5, downloaded unless installed, or a file)
     {program} lyrics [--json]              Lyrics of the current track (or why there are none)
   Driving the TUI (not in --daemon mode)
     {program} key KEY... [--text WORDS]    Press keys as if typed: j, ?, G, Enter, Esc, Tab,

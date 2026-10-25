@@ -302,6 +302,64 @@ pub fn ensure_default_skin(skins_dir: &Path) -> Result<Option<PathBuf>> {
     download_skin(DEFAULT_SKIN_MD5, DEFAULT_SKIN_FILE, skins_dir).map(Some)
 }
 
+/// Lowercase hex md5 of `bytes` (the museum's skin id).
+fn md5_hex(bytes: &[u8]) -> String {
+    use md5::{Digest, Md5};
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(32);
+    for b in Md5::digest(bytes) {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+/// The installed skin whose file content is museum skin `md5`, if any
+/// (installed under any name). Reads and hashes the skins one by one.
+pub fn installed_skin_with_md5(skins_dir: &Path, md5: &str) -> Option<PathBuf> {
+    let md5 = md5.to_ascii_lowercase();
+    list_skins(skins_dir).into_iter().find(|path| {
+        std::fs::read(path)
+            .map(|bytes| md5_hex(&bytes) == md5)
+            .unwrap_or(false)
+    })
+}
+
+/// The museum's file name for skin `md5`.
+pub fn fetch_skin_filename(md5: &str) -> Result<String> {
+    anyhow::ensure!(is_skin_md5(md5), "Invalid skin id");
+    let query = json!({
+        "query": "query($md5: String!) { fetch_skin_by_md5(md5: $md5) { filename } }",
+        "variables": { "md5": md5 }
+    });
+    parse_skin_filename(&post_json(WEBAMP_GRAPHQL, &query)?, md5)
+}
+
+fn parse_skin_filename(body: &Value, md5: &str) -> Result<String> {
+    let skin = graphql_data(body, "fetch_skin_by_md5")
+        .map_err(|_| anyhow::anyhow!("No skin {md5} in the Winamp Skin Museum"))?;
+    let raw = skin["filename"].as_str().unwrap_or("");
+    Ok(sanitize_skin_filename(raw, md5))
+}
+
+/// A file name in `skins_dir` for skin `md5` that does not overwrite a
+/// different installed skin: `filename`, else `stem-<md5 prefix>.wsz`, else
+/// `<md5>.wsz`, else a numbered variant.
+pub fn unused_skin_filename(skins_dir: &Path, filename: &str, md5: &str) -> String {
+    let filename = sanitize_skin_filename(filename, md5);
+    let stem = filename.trim_end_matches(".wsz");
+    let short = md5.get(..8).unwrap_or(md5);
+    let candidates = [
+        filename.clone(),
+        format!("{stem}-{short}.wsz"),
+        format!("{md5}.wsz"),
+    ];
+    candidates
+        .into_iter()
+        .chain((2..).map(|n| format!("{stem}-{short}-{n}.wsz")))
+        .find(|name| !skins_dir.join(name).exists())
+        .unwrap_or(filename)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,5 +496,64 @@ mod tests {
         assert!(page.total.unwrap() > 100_000);
         let found = search_skins("zelda", 0, 5, &dir).unwrap();
         assert!(!found.entries.is_empty());
+    }
+
+    fn temp_skins(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rt-net-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn installed_skins_are_found_by_content_md5() {
+        let dir = temp_skins("md5");
+        std::fs::write(dir.join("base-2.91.wsz"), b"abc").unwrap();
+        std::fs::write(dir.join("other.wsz"), b"xyz").unwrap();
+        // md5("abc"), in either case.
+        let md5 = "900150983cd24fb0d6963f7d28e17f72";
+        assert_eq!(md5_hex(b"abc"), md5);
+        assert_eq!(
+            installed_skin_with_md5(&dir, &md5.to_uppercase()),
+            Some(dir.join("base-2.91.wsz"))
+        );
+        assert_eq!(installed_skin_with_md5(&dir, MD5), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn new_skins_never_overwrite_a_different_one() {
+        let dir = temp_skins("unused");
+        assert_eq!(unused_skin_filename(&dir, "Cool.wsz", MD5), "Cool.wsz");
+        std::fs::write(dir.join("Cool.wsz"), b"x").unwrap();
+        assert_eq!(
+            unused_skin_filename(&dir, "Cool.wsz", MD5),
+            "Cool-01234567.wsz"
+        );
+        std::fs::write(dir.join("Cool-01234567.wsz"), b"x").unwrap();
+        assert_eq!(
+            unused_skin_filename(&dir, "Cool.wsz", MD5),
+            format!("{MD5}.wsz")
+        );
+        std::fs::write(dir.join(format!("{MD5}.wsz")), b"x").unwrap();
+        assert_eq!(
+            unused_skin_filename(&dir, "Cool.wsz", MD5),
+            "Cool-01234567-2.wsz"
+        );
+        assert_eq!(unused_skin_filename(&dir, "../x", MD5), "x.wsz");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn museum_filename_comes_from_graphql() {
+        let body = json!({"data": {"fetch_skin_by_md5": {"filename": "base-2.91.wsz"}}});
+        assert_eq!(parse_skin_filename(&body, MD5).unwrap(), "base-2.91.wsz");
+        let body = json!({"data": {"fetch_skin_by_md5": {"filename": "../Evil.zip"}}});
+        assert_eq!(parse_skin_filename(&body, MD5).unwrap(), "Evil.wsz");
+        let missing = json!({"data": {"fetch_skin_by_md5": null}});
+        assert!(parse_skin_filename(&missing, MD5)
+            .unwrap_err()
+            .to_string()
+            .contains("No skin"));
     }
 }
