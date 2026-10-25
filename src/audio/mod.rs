@@ -209,6 +209,11 @@ impl Engine {
             + Duration::from_nanos((frames % rate) * 1_000_000_000 / rate)
     }
 
+    #[cfg(test)]
+    pub fn status(&self) -> PlayStatus {
+        self.shared.status()
+    }
+
     /// 0.0..=1.0 slider position; mapped through a perceptual (cubic) curve.
     pub fn set_volume(&self, v: f32) {
         self.shared.params.set_volume(v);

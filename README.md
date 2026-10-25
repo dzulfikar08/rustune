@@ -282,6 +282,8 @@ Choose the **Winamp** theme in Settings (`s`). From there, press `i` to pick a l
 
 The terminal graphics protocol (kitty, iTerm2, sixel, or half-block fallback) is detected automatically; override it with the `graphics` config option.
 
+In Winamp mode the main, equalizer and playlist windows come from the skin's own bitmaps, and every button, slider and playlist row works with the mouse (click, drag, double-click to play, wheel to scroll). The playlist window shows the play queue: `l` opens files, folders, playlists or URLs, `/` loads matching library tracks (or yt-dlp results on the Online tab) into it, and `e` / `P` toggle the equalizer and playlist windows. Clicking the visualizer cycles analyzer → oscilloscope → off. Graphics need at least 275 columns in half-block mode; smaller terminals get a skin-coloured text layout. Provider browsing (radio, podcasts, Subsonic, Jellyfin) and the lyrics panel live in the Dark and Light themes.
+
 ## Disclaimer
 
 rustune is a personal music player. Online audio search is powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp), a third-party tool that rustune does not control. Users are solely responsible for ensuring their use of any online sources complies with applicable laws and the terms of service of the respective platforms.

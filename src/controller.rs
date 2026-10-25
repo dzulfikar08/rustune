@@ -1463,6 +1463,11 @@ impl Controller {
                         } else {
                             Status::Idle
                         });
+                        if self.app.is_winamp() && !items.is_empty() {
+                            // The skin shows the queue: load the results into it.
+                            self.app.queue.replace(items.clone(), None);
+                            self.mark_dirty();
+                        }
                         self.app.results = items;
                         self.app.list_state.select(Some(0));
                     }
