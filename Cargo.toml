@@ -1,6 +1,6 @@
 [package]
 name = "rustune"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 description = "A terminal music player with online audio search, local playback, and Winamp skin support"
 repository = "https://github.com/dzulfikar08/rustune"
@@ -12,15 +12,45 @@ categories = ["command-line-utilities", "multimedia::audio"]
 [dependencies]
 ratatui = "0.29"
 crossterm = "0.28"
-tokio = { version = "1", features = ["rt-multi-thread", "process", "sync", "time", "macros", "io-util", "net"] }
+# `signal`: daemon SIGINT/SIGTERM; adds no crates (signal-hook-registry is
+# already pulled in by `process`).
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "sync", "time", "process", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 toml = "0.8"
 dirs = "6"
-async-trait = "0.1"
-zip = { version = "8.5.0", features = ["deflate"] }
-reqwest = { version = "0.12", features = ["rustls-tls", "json"], default-features = false }
-rodio = { version = "0.22", features = [
-    "symphonia-all",
-] }
+zip = { version = "8.5.0", default-features = false, features = ["deflate-flate2"] }
+cpal = "0.17"
+symphonia = { version = "=0.5.5", default-features = false, features = ["mp3", "flac", "ogg", "vorbis", "wav", "pcm", "isomp4", "aac", "alac", "aiff", "mkv"] }
+ureq = { version = "3", features = ["json"] }
+quick-xml = "0.38"
+md-5 = "0.10"
+# zlib for kitty graphics payloads and the PNG encoder (iTerm2, skin previews);
+# already in the tree via zip, default miniz_oxide backend.
+flate2 = "1"
+
+# Media keys / Now Playing (src/mediactl). All but objc2-media-player are
+# already in the macOS tree through cpal; features are the minimum used.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+dispatch2 = { version = "0.3", default-features = false, features = ["std"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFRunLoop", "CFDate"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSDictionary", "NSValue", "NSObject"] }
+objc2-media-player = { version = "0.3", default-features = false, features = ["std", "block2", "MPRemoteCommandCenter", "MPRemoteCommand", "MPRemoteCommandEvent", "MPNowPlayingInfoCenter", "MPMediaItem"] }
+
+# libc is already in the tree (cpal, alsa): getuid() for the D-Bus SASL
+# handshake (MPRIS uses the built-in client in src/mediactl/dbus.rs) and
+# dlopen() of AppKit on macOS.
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+libc = "0.2"
+# Named-pipe server for IPC; same windows-sys tokio already uses (no new crate).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Pipes"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"

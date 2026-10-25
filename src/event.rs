@@ -1,38 +1,78 @@
+use std::path::PathBuf;
+
 use anyhow::Result;
 
-use crate::extractor::ExtractorStatus;
-use crate::media::{MediaItem, SourceKind, StreamInfo};
+use crate::app::SkinEntry;
+use crate::audio::EngineEvent;
+use crate::browse::Entry;
+use crate::install::Deps;
+use crate::media::{MediaItem, StreamInfo};
+use crate::net::SkinPage;
+use crate::providers::lyrics::Lyrics;
+use crate::providers::ProviderKind;
+use crate::skin::WinampSkin;
 
-#[derive(Debug)]
-#[allow(dead_code)]
+/// Everything the controller reacts to: terminal input (from the input
+/// thread), playback backends and background tasks.
 pub enum AppEvent {
+    Term(crossterm::event::Event),
+    /// Online search results; `token` identifies the request.
     ItemsReady {
+        token: u64,
         results: Result<Vec<MediaItem>>,
-        source: SourceKind,
     },
-    StreamReady(Result<StreamInfo>),
-    PlaybackProgress {
-        elapsed_secs: u64,
-        duration_secs: u64,
+    /// An extractor resolved the stream for play request `token`.
+    StreamReady {
+        token: u64,
+        result: Result<StreamInfo>,
     },
-    PlaybackComplete,
-    PlaybackError(String),
-    ExtractorStatus {
-        name: String,
-        status: ExtractorStatus,
+    /// The audio engine reported progress of a track (engine thread).
+    Engine(EngineEvent),
+    /// LRCLIB answered for the track identified by `key`.
+    LyricsReady {
+        key: String,
+        result: Result<Option<Lyrics>, String>,
     },
+    /// A provider browser level finished loading.
+    BrowseLoaded {
+        kind: ProviderKind,
+        token: u64,
+        result: crate::providers::Result<Vec<Entry>>,
+    },
+    DepsProbed(Deps),
     ScanComplete(Result<Vec<MediaItem>>),
+    /// Items resolved from command-line arguments, the open prompt or an
+    /// `Enqueue` command (`append`: add to a non-empty queue, don't replace).
+    QueueResolved {
+        items: Vec<MediaItem>,
+        errors: Vec<String>,
+        append: bool,
+    },
     SkinListFetched {
-        entries: Result<(Vec<crate::app::SkinEntry>, usize)>,
+        token: u64,
+        page: Result<SkinPage>,
         requested_offset: usize,
     },
+    LocalSkinsListed(Vec<SkinEntry>),
     SkinDownloaded {
         md5: String,
-        filename: String,
-        result: Result<()>,
+        result: Result<PathBuf>,
     },
+    SkinLoaded {
+        path: Option<PathBuf>,
+        result: Result<Box<WinampSkin>>,
+    },
+    /// The base skin was fetched in the background (`Some` = newly installed).
+    DefaultSkinReady(Result<Option<PathBuf>>),
     DownloadComplete {
         title: String,
         result: Result<()>,
     },
+    StateSaved(Result<()>),
+    /// A player command from outside the key handler (IPC socket, OS media
+    /// controls); applied through `Controller::apply`.
+    Command(crate::command::Command),
+    /// Answer once every earlier event is applied and observers have seen the
+    /// result, so an IPC client's next request reads fresh state.
+    Flush(std::sync::mpsc::SyncSender<()>),
 }

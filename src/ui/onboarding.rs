@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, OnboardingStep};
+use crate::install::DepStatus;
 use crate::theme::Theme;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
@@ -14,7 +15,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     let outer = Block::bordered()
         .title(" rustune setup ")
-        .title_style(Style::default().fg(ratatui::style::Color::Cyan).add_modifier(Modifier::BOLD))
+        .title_style(
+            Style::default()
+                .fg(ratatui::style::Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
         .border_type(BorderType::Rounded)
         .border_style(theme.result_border);
 
@@ -46,10 +51,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     let steps = format!("[ {step_num} / 4 ]");
-    let step_line = Line::from(Span::styled(
-        steps,
-        theme.page_nav_active,
-    ));
+    let step_line = Line::from(Span::styled(steps, theme.page_nav_active));
     frame.render_widget(
         Paragraph::new(step_line).alignment(Alignment::Center),
         chunks[2],
@@ -61,7 +63,9 @@ fn render_welcome(frame: &mut Frame, area: Rect, theme: &Theme) {
         Line::from(""),
         Line::from(Span::styled(
             "  rustune",
-            Style::default().add_modifier(Modifier::BOLD).fg(ratatui::style::Color::Cyan),
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(ratatui::style::Color::Cyan),
         )),
         Line::from(Span::styled(
             "  A lightweight terminal music player",
@@ -78,28 +82,23 @@ fn render_welcome(frame: &mut Frame, area: Rect, theme: &Theme) {
 }
 
 fn render_dependencies(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    // Check mpv status
-    let mpv_status = match std::process::Command::new("mpv").arg("--version").output() {
-        Ok(o) if o.status.success() => {
-            let v = String::from_utf8_lossy(&o.stdout);
-            let version = v.lines().next().unwrap_or("mpv");
-            (true, version.to_string())
+    // Probed once in the background at startup (and after installs).
+    let status = |s: &DepStatus| -> (bool, String) {
+        match s {
+            DepStatus::Found(version) => (true, version.clone()),
+            DepStatus::Checking => (false, "checking…".into()),
+            DepStatus::Missing => (false, "Not found".into()),
         }
-        _ => (false, "Not found".into()),
     };
-
-    // Check yt-dlp status
-    let ytdlp_status = match std::process::Command::new("yt-dlp").arg("--version").output() {
-        Ok(o) if o.status.success() => {
-            let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            (true, v)
-        }
-        _ => (false, "Not found".into()),
-    };
+    let ytdlp_status = status(&app.deps.ytdlp);
+    let ffmpeg_status = status(&app.deps.ffmpeg);
 
     let dep_line = |found: bool, name: &str, version: &str, selected: bool| -> Line<'static> {
         let (mark, mark_style) = if found {
-            ("\u{2713}", Style::default().fg(ratatui::style::Color::Green))
+            (
+                "\u{2713}",
+                Style::default().fg(ratatui::style::Color::Green),
+            )
         } else {
             ("\u{2717}", theme.error_text)
         };
@@ -130,11 +129,23 @@ fn render_dependencies(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) 
         Line::from(""),
         Line::from(Span::styled(
             "  Dependency Check",
-            Style::default().add_modifier(Modifier::BOLD).fg(ratatui::style::Color::Cyan),
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(ratatui::style::Color::Cyan),
         )),
         Line::from(""),
-        dep_line(mpv_status.0, "mpv (required)", &mpv_status.1, sel == 0),
-        dep_line(ytdlp_status.0, "yt-dlp (optional, for online search)", &ytdlp_status.1, sel == 1),
+        dep_line(
+            ytdlp_status.0,
+            "yt-dlp (optional, for online search)",
+            &ytdlp_status.1,
+            sel == 0,
+        ),
+        dep_line(
+            ffmpeg_status.0,
+            "ffmpeg (optional, for opus/wma and HLS streams)",
+            &ffmpeg_status.1,
+            sel == 1,
+        ),
         Line::from(""),
         Line::from(Span::styled(
             "  j/k: select | i: install | Enter: continue",
@@ -152,7 +163,9 @@ fn render_music_dir(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         Line::from(""),
         Line::from(Span::styled(
             "  Music Directory",
-            Style::default().add_modifier(Modifier::BOLD).fg(ratatui::style::Color::Cyan),
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(ratatui::style::Color::Cyan),
         )),
         Line::from(""),
         Line::from(Span::styled(
@@ -182,7 +195,9 @@ fn render_theme_selection(frame: &mut Frame, area: Rect, _app: &App, theme: &The
         Line::from(""),
         Line::from(Span::styled(
             "  Select Theme (j/k to preview, Enter to confirm)",
-            Style::default().add_modifier(Modifier::BOLD).fg(ratatui::style::Color::Cyan),
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(ratatui::style::Color::Cyan),
         )),
         Line::from(""),
     ];
@@ -197,7 +212,10 @@ fn render_theme_selection(frame: &mut Frame, area: Rect, _app: &App, theme: &The
         };
         lines.push(Line::from(Span::styled(
             format!("{prefix}{}", t.name),
-            style.fg(theme.page_nav_active.fg.unwrap_or(ratatui::style::Color::White)),
+            style.fg(theme
+                .page_nav_active
+                .fg
+                .unwrap_or(ratatui::style::Color::White)),
         )));
     }
 

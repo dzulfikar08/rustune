@@ -1,263 +1,135 @@
-/// Skin layout zones for bitmap-based Winamp rendering.
-///
-/// Defines the Winamp 2.x pixel-coordinate regions within MAIN.BMP and maps
-/// them to terminal rows. Used by the bitmap renderer to paint chrome from
-/// actual skin bitmaps and overlay dynamic content on top.
-
-use std::collections::HashMap;
+//! Classic stacked window layout (main, equalizer, playlist) fitted to a
+//! terminal area.
 
 use ratatui::layout::Rect;
 
-use crate::skin::{BmpImage, WinampSkin};
+use crate::winamp::compose::playlist_height;
+use crate::winamp::sprites::{PL_BOTTOM_H, PL_ROW_STEP, PL_TOP_H, WINDOW_H, WINDOW_W};
+use crate::winamp::Window;
 
-/// A rectangle in BMP pixel coordinates.
-#[derive(Debug, Clone, Copy)]
-pub struct BmpRect {
-    pub x: u32,
-    pub y: u32,
-    pub w: u32,
-    pub h: u32,
+/// One window placed on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowPlan {
+    pub window: Window,
+    /// Top-left cell.
+    pub at: (u16, u16),
+    /// Covered cells.
+    pub cells: Rect,
+    pub height_px: u32,
 }
 
-/// Semantic zones in the Winamp main window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ZoneKind {
-    TitleBar,
-    ClutterBar,
-    LedTime,
-    Spectrum,
-    Marquee,
-    SeekBar,
-    Transport,
-    Volume,
-    Balance,
-    Status,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Plan {
+    /// Integer pixel scale (1 in half-block mode).
+    pub scale: u32,
+    /// Cell size in pixels ((1, 2) in half-block mode).
+    pub cell: (u16, u16),
+    pub main: WindowPlan,
+    pub eq: Option<WindowPlan>,
+    pub playlist: Option<WindowPlan>,
 }
 
-/// One zone: where to crop from MAIN.BMP, which terminal row and column offset.
-#[derive(Debug, Clone, Copy)]
-pub struct SkinZone {
-    pub src_rect: BmpRect,
-    pub terminal_row: u16,
-    pub col_start: u16,
+const MAX_SCALE: u32 = 8;
+
+fn rows_for(px: u32, scale: u32, ch: u16) -> u16 {
+    (px * scale)
+        .div_ceil(u32::from(ch))
+        .min(u32::from(u16::MAX)) as u16
 }
 
-/// Computed layout for a fully-loaded skin.
-pub struct SkinLayout {
-    pub zones: HashMap<ZoneKind, SkinZone>,
-    /// Additional BMP images (all optional).
-    pub numbers: Option<BmpImage>,
-    pub cbuttons: Option<BmpImage>,
-    pub posbar: Option<BmpImage>,
-    pub text_bmp: Option<BmpImage>,
-    pub playpaus: Option<BmpImage>,
-    pub titlebar_bmp: Option<BmpImage>,
-    pub monoster: Option<BmpImage>,
-    pub shufrep: Option<BmpImage>,
-    pub volume_bmp: Option<BmpImage>,
-}
-
-impl SkinLayout {
-    /// Build a layout from a loaded skin. Returns `None` if MAIN.BMP is missing.
-    /// Only MAIN.BMP is required — all other BMPs are optional enhancements.
-    pub fn from_skin(skin: &WinampSkin) -> Option<Self> {
-        // MAIN.BMP is the only hard requirement
-        let main = skin.main_bitmap.as_ref()?;
-        validate_dims(main, 100, 50)?;
-
-        // Optional BMPs — available when present, None otherwise
-        let numbers = skin.numbers_bitmap.as_ref().cloned();
-        let cbuttons = skin.cbuttons_bitmap.as_ref().cloned();
-        let posbar = skin.posbar_bitmap.as_ref().cloned();
-        let text_bmp = skin.text_bitmap.as_ref().cloned();
-        let playpaus = skin.playpaus_bitmap.as_ref().cloned();
-        let titlebar_bmp = skin.titlebar_bitmap.as_ref().cloned();
-        let monoster = skin.monoster_bitmap.as_ref().cloned();
-        let shufrep = skin.shufrep_bitmap.as_ref().cloned();
-        let volume_bmp = skin.volume_bitmap.as_ref().cloned();
-
-        // Build zone map with Winamp 2.x MAIN.BMP pixel coordinates
-        let zones = build_zones();
-
-        Some(Self {
-            zones,
-            numbers,
-            cbuttons,
-            posbar,
-            text_bmp,
-            playpaus,
-            titlebar_bmp,
-            monoster,
-            shufrep,
-            volume_bmp,
-        })
-    }
-
-    /// Get the zone info for a given kind.
-    #[allow(dead_code)]
-    pub fn zone(&self, kind: ZoneKind) -> Option<SkinZone> {
-        self.zones.get(&kind).copied()
-    }
-
-    /// Compute the terminal Rect for a zone within the main window area.
-    #[allow(dead_code)]
-    pub fn zone_rect(&self, kind: ZoneKind, main_area: Rect) -> Rect {
-        let zone = self.zones.get(&kind);
-        match zone {
-            Some(z) => {
-                let y = main_area.y + z.terminal_row;
-                let x = main_area.x + z.col_start;
-                Rect {
-                    x,
-                    y,
-                    width: main_area.width.saturating_sub(z.col_start),
-                    height: 1,
-                }
+/// Fit the windows into `area` (cells) for cell size `cell` (px). Picks the
+/// largest integer scale at which main + EQ + a minimal playlist fit; if
+/// nothing fits at 1x it drops the EQ, then the playlist. `None` = even the
+/// main window doesn't fit (use the text layout).
+pub fn plan(
+    area: Rect,
+    cell: (u16, u16),
+    max_scale: u32,
+    show_eq: bool,
+    show_pl: bool,
+) -> Option<Plan> {
+    let (cw, ch) = (cell.0.max(1), cell.1.max(1));
+    let avail_w = u32::from(area.width) * u32::from(cw);
+    let max_scale = max_scale.clamp(1, MAX_SCALE).min(avail_w / WINDOW_W);
+    let wants = [(show_eq, show_pl), (false, show_pl), (false, false)];
+    for (eq, pl) in wants {
+        for scale in (1..=max_scale).rev() {
+            let main_rows = rows_for(WINDOW_H, scale, ch);
+            let eq_rows = if eq { rows_for(WINDOW_H, scale, ch) } else { 0 };
+            let pl_min = if pl {
+                rows_for(playlist_height(1), scale, ch)
+            } else {
+                0
+            };
+            let need = u32::from(main_rows) + u32::from(eq_rows) + u32::from(pl_min);
+            if need > u32::from(area.height) {
+                continue;
             }
-            None => Rect::default(),
+            let cols = (WINDOW_W * scale).div_ceil(u32::from(cw)) as u16;
+            let x = area.x + (area.width - cols) / 2;
+            let place = |window, y: u16, rows: u16, height_px| WindowPlan {
+                window,
+                at: (x, y),
+                cells: Rect::new(x, y, cols, rows),
+                height_px,
+            };
+            let main = place(Window::Main, area.y, main_rows, WINDOW_H);
+            let eq_plan =
+                eq.then(|| place(Window::Equalizer, area.y + main_rows, eq_rows, WINDOW_H));
+            let playlist = pl.then(|| {
+                let y = area.y + main_rows + eq_rows;
+                let rows_left = area.height - main_rows - eq_rows;
+                let px_avail = u32::from(rows_left) * u32::from(ch) / scale;
+                let segments = px_avail.saturating_sub(PL_TOP_H + PL_BOTTOM_H) / PL_ROW_STEP;
+                let h = playlist_height(segments);
+                place(Window::Playlist, y, rows_for(h, scale, ch), h)
+            });
+            return Some(Plan {
+                scale,
+                cell: (cw, ch),
+                main,
+                eq: eq_plan,
+                playlist,
+            });
         }
     }
+    None
 }
 
-fn validate_dims(bmp: &BmpImage, min_w: u32, min_h: u32) -> Option<()> {
-    if bmp.width >= min_w && bmp.height >= min_h {
-        Some(())
-    } else {
-        None
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn halfblock_needs_full_width_and_drops_windows_by_height() {
+        // 275 cols × 150 rows at 1×2 px: main 58 + eq 58 + playlist ≥ 44 rows.
+        let p = plan(Rect::new(0, 0, 300, 160), (1, 2), 1, true, true).unwrap();
+        assert_eq!(p.scale, 1);
+        assert_eq!(p.main.cells, Rect::new(12, 0, 275, 58));
+        assert_eq!(p.eq.unwrap().cells.y, 58);
+        let pl = p.playlist.unwrap();
+        assert_eq!(pl.cells.y, 116);
+        // 44 rows = 88 px → 1 segment (87 px).
+        assert_eq!(pl.height_px, 87);
+        // Too short for EQ + playlist: EQ goes first.
+        let p = plan(Rect::new(0, 0, 275, 110), (1, 2), 1, true, true).unwrap();
+        assert!(p.eq.is_none());
+        assert!(p.playlist.is_some());
+        // Too narrow: text layout.
+        assert!(plan(Rect::new(0, 0, 200, 200), (1, 2), 1, true, true).is_none());
     }
-}
 
-fn build_zones() -> HashMap<ZoneKind, SkinZone> {
-    let mut m = HashMap::new();
-    m.insert(
-        ZoneKind::TitleBar,
-        SkinZone {
-            src_rect: BmpRect {
-                x: 0,
-                y: 0,
-                w: 275,
-                h: 20,
-            },
-            terminal_row: 0,
-            col_start: 0,
-        },
-    );
-    m.insert(
-        ZoneKind::ClutterBar,
-        SkinZone {
-            src_rect: BmpRect {
-                x: 9,
-                y: 6,
-                w: 16,
-                h: 16,
-            },
-            terminal_row: 1,
-            col_start: 0,
-        },
-    );
-    m.insert(
-        ZoneKind::LedTime,
-        SkinZone {
-            src_rect: BmpRect {
-                x: 9,
-                y: 26,
-                w: 62,
-                h: 12,
-            },
-            terminal_row: 1,
-            col_start: 3,
-        },
-    );
-    m.insert(
-        ZoneKind::Spectrum,
-        SkinZone {
-            src_rect: BmpRect {
-                x: 78,
-                y: 22,
-                w: 197,
-                h: 28,
-            },
-            terminal_row: 1,
-            col_start: 11,
-        },
-    );
-    m.insert(
-        ZoneKind::Marquee,
-        SkinZone {
-            src_rect: BmpRect {
-                x: 9,
-                y: 53,
-                w: 257,
-                h: 12,
-            },
-            terminal_row: 2,
-            col_start: 0,
-        },
-    );
-    m.insert(
-        ZoneKind::SeekBar,
-        SkinZone {
-            src_rect: BmpRect {
-                x: 16,
-                y: 72,
-                w: 244,
-                h: 6,
-            },
-            terminal_row: 3,
-            col_start: 0,
-        },
-    );
-    m.insert(
-        ZoneKind::Transport,
-        SkinZone {
-            src_rect: BmpRect {
-                x: 0,
-                y: 57,
-                w: 136,
-                h: 36,
-            },
-            terminal_row: 4,
-            col_start: 0,
-        },
-    );
-    m.insert(
-        ZoneKind::Volume,
-        SkinZone {
-            src_rect: BmpRect {
-                x: 136,
-                y: 57,
-                w: 68,
-                h: 36,
-            },
-            terminal_row: 4,
-            col_start: 20,
-        },
-    );
-    m.insert(
-        ZoneKind::Balance,
-        SkinZone {
-            src_rect: BmpRect {
-                x: 204,
-                y: 57,
-                w: 68,
-                h: 36,
-            },
-            terminal_row: 4,
-            col_start: 30,
-        },
-    );
-    m.insert(
-        ZoneKind::Status,
-        SkinZone {
-            src_rect: BmpRect {
-                x: 0,
-                y: 93,
-                w: 275,
-                h: 23,
-            },
-            terminal_row: 5,
-            col_start: 0,
-        },
-    );
-    m
+    #[test]
+    fn graphics_picks_largest_integer_scale() {
+        // 200×60 cells of 10×20 px = 2000×1200 px.
+        let p = plan(Rect::new(0, 0, 200, 60), (10, 20), 8, true, true).unwrap();
+        // 3x: main 348px = 18 rows, eq 18, playlist min 261px = 14 rows → 50 ≤ 60.
+        assert_eq!(p.scale, 3);
+        assert_eq!(p.main.cells.width, 83);
+        let pl = p.playlist.unwrap();
+        assert_eq!(pl.cells.y, 36);
+        // 24 rows × 20 px / 3 = 160 px → 3 segments → 145 px.
+        assert_eq!(pl.height_px, 145);
+        assert_eq!(pl.cells.height, 22);
+    }
 }

@@ -1,0 +1,55 @@
+name: Skin preview
+
+# Renders the classic main / equalizer / playlist windows of a few real skins
+# from the Winamp Skin Museum with the in-tree compositor and uploads PNGs.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["wave1/skin"]
+
+concurrency:
+  group: skin-preview-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: Download skins from the Winamp Skin Museum
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p skin-preview/skins skin-preview/out
+          # md5 -> name (base-2.91 is the default skin in src/main.rs)
+          skins=(
+            "5e4f10275dcb1fb211d4a8b4f1bda236 base-2.91"
+            "cd251187a5e6ff54ce938d26f1f2de02 Winamp3_Classified_v5.5"
+            "d770a634cc1ab252cfb16c64f4f5f616 Zelda_Amp_3"
+            "971c1afc05b56f5160903d0748b73239 Deus_Ex_Amp_by_AJ"
+            "47597ab8e5ffcd39686d455c10c3b436 Garfield"
+          )
+          for entry in "${skins[@]}"; do
+            read -r md5 name <<<"$entry"
+            curl -fsSL --retry 3 -o "skin-preview/skins/${name}.wsz" \
+              "https://r2.webampskins.org/skins/${md5}.wsz"
+          done
+          ls -l skin-preview/skins
+      - name: Render previews
+        run: cargo test --locked skin_previews -- --ignored --nocapture
+        env:
+          SKIN_PREVIEW_DIR: skin-preview/skins
+          SKIN_PREVIEW_OUT: skin-preview/out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: skin-previews
+          path: skin-preview/out/*.png
+          if-no-files-found: error

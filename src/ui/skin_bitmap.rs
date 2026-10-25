@@ -1,112 +1,65 @@
-use ratatui::{
-    layout::Rect,
-    style::{Color, Style},
-    Frame,
-};
+//! Half-block (`▀`) rasterizer: draws an RGBA framebuffer at 1:1 pixel scale
+//! into ratatui cells (1 pixel wide, 2 pixels tall per cell). Used when the
+//! terminal has no pixel graphics protocol.
 
-use crate::skin::BmpImage;
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Position, Rect};
+use ratatui::style::Color;
 
-pub fn render_scaled_bitmap(frame: &mut Frame, area: Rect, bmp: &BmpImage) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
+use crate::winamp::canvas::Canvas;
 
-    // We render using upper-half block '▀' so each terminal cell represents 2 vertical pixels.
-    let virtual_h = (area.height as u32).saturating_mul(2).max(1);
-    let virtual_w = area.width as u32;
-
-    let buf = frame.buffer_mut();
-
-    for dy in 0..area.height {
-        for dx in 0..area.width {
-            let vx = (dx as u32)
-                .saturating_mul(bmp.width)
-                .checked_div(virtual_w)
-                .unwrap_or(0);
-
-            let vy_top = (dy as u32)
-                .saturating_mul(2)
-                .saturating_mul(bmp.height)
-                .checked_div(virtual_h)
-                .unwrap_or(0);
-
-            let vy_bot = (dy as u32)
-                .saturating_mul(2)
-                .saturating_add(1)
-                .saturating_mul(bmp.height)
-                .checked_div(virtual_h)
-                .unwrap_or(0);
-
-            let top = bmp.color_at(vx, vy_top);
-            let bot = bmp.color_at(vx, vy_bot);
-
-            // If both colors are identical, a space with bg is cheaper visually than '▀'.
-            if top == bot {
-                buf[(area.x + dx, area.y + dy)]
-                    .set_symbol(" ")
-                    .set_style(Style::default().bg(top));
+/// Draw `canvas` with its top-left at cell `at`; returns the covered cells
+/// (clipped to the buffer).
+pub fn draw_halfblock(buf: &mut Buffer, canvas: &Canvas, at: (u16, u16)) -> Rect {
+    let cols = canvas.width().min(u32::from(u16::MAX)) as u16;
+    let rows = canvas.height().div_ceil(2).min(u32::from(u16::MAX)) as u16;
+    let area = Rect::new(at.0, at.1, cols, rows).intersection(buf.area);
+    for y in area.top()..area.bottom() {
+        let py = u32::from(y - at.1) * 2;
+        for x in area.left()..area.right() {
+            let px = u32::from(x - at.0);
+            let top = canvas.get(px, py);
+            let bottom = canvas.get(px, py + 1).or(top);
+            let (Some(t), Some(b)) = (top, bottom) else {
+                continue;
+            };
+            let Some(cell) = buf.cell_mut(Position::new(x, y)) else {
+                continue;
+            };
+            let (t, b) = (Color::Rgb(t[0], t[1], t[2]), Color::Rgb(b[0], b[1], b[2]));
+            cell.reset();
+            if t == b {
+                cell.set_symbol(" ").set_bg(t);
             } else {
-                buf[(area.x + dx, area.y + dy)]
-                    .set_symbol("▀")
-                    .set_style(Style::default().fg(top).bg(bot));
+                cell.set_symbol("▀").set_fg(t).set_bg(b);
             }
         }
     }
+    area
 }
 
-/// Render a sub-rectangle of a BMP into the given terminal area.
-/// Crops from (src_x, src_y) with size (src_w, src_h), then scales
-/// the cropped image to fill `area`.
-pub fn render_bitmap_region(
-    frame: &mut Frame,
-    area: Rect,
-    bmp: &BmpImage,
-    src_x: u32,
-    src_y: u32,
-    src_w: u32,
-    src_h: u32,
-) {
-    if area.width == 0 || area.height == 0 || src_w == 0 || src_h == 0 {
-        return;
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    // Clamp source rect to BMP bounds
-    let src_x = src_x.min(bmp.width.saturating_sub(1));
-    let src_y = src_y.min(bmp.height.saturating_sub(1));
-    let src_w = src_w.min(bmp.width.saturating_sub(src_x));
-    let src_h = src_h.min(bmp.height.saturating_sub(src_y));
-
-    if src_w == 0 || src_h == 0 {
-        return;
-    }
-
-    // Build a cropped BmpImage
-    let mut pixels = vec![0u8; (src_w as usize) * (src_h as usize)];
-    for dy in 0..src_h as usize {
-        let src_row_start = ((src_y as usize) + dy) * (bmp.width as usize) + (src_x as usize);
-        let dst_row_start = dy * (src_w as usize);
-        let src_row = &bmp.pixels[src_row_start..src_row_start + (src_w as usize)];
-        pixels[dst_row_start..dst_row_start + (src_w as usize)].copy_from_slice(src_row);
-    }
-
-    let cropped = BmpImage {
-        width: src_w,
-        height: src_h,
-        palette: bmp.palette.clone(),
-        pixels,
-        raw_rgb: None, // crop not supported for raw_rgb mode yet
-    };
-
-    render_scaled_bitmap(frame, area, &cropped);
-}
-
-#[allow(dead_code)]
-pub fn solid_fill(frame: &mut Frame, area: Rect, color: Color) {
-    let buf = frame.buffer_mut();
-    for y in area.top()..area.bottom() {
-        for x in area.left()..area.right() {
-            buf[(x, y)].set_style(Style::default().bg(color));
-        }
+    #[test]
+    fn two_pixels_per_cell() {
+        let mut c = Canvas::new();
+        c.resize(2, 3);
+        c.fill([10, 10, 10, 255]);
+        c.set(0, 1, [200, 0, 0, 255]);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 5, 5));
+        let r = draw_halfblock(&mut buf, &c, (1, 1));
+        assert_eq!(r, Rect::new(1, 1, 2, 2));
+        let a = buf.cell(Position::new(1, 1)).unwrap();
+        assert_eq!(a.symbol(), "▀");
+        assert_eq!(a.fg, Color::Rgb(10, 10, 10));
+        assert_eq!(a.bg, Color::Rgb(200, 0, 0));
+        let b = buf.cell(Position::new(2, 1)).unwrap();
+        assert_eq!(b.symbol(), " ");
+        assert_eq!(b.bg, Color::Rgb(10, 10, 10));
+        // Odd height: last row repeats the top pixel.
+        let c2 = buf.cell(Position::new(1, 2)).unwrap();
+        assert_eq!(c2.bg, Color::Rgb(10, 10, 10));
     }
 }
-
