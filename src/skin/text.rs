@@ -227,11 +227,22 @@ fn parse_iniish_metadata(s: &str) -> (Option<String>, Option<String>, Option<Str
         }
     }
 
-    // README/INFO files are often prose; take the first line as the name.
+    // README/INFO files are often prose; take the first line as the name
+    // unless it is decoration ("=====README=====", "*******").
     if name.is_none() {
         if let Some(first) = s.lines().map(str::trim).find(|l| !l.is_empty()) {
             let lower = first.to_lowercase();
-            if !lower.starts_with("readme") && !lower.starts_with("skin") && first.len() <= 80 {
+            let total = first.chars().count();
+            let wordy = first
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == ' ')
+                .count();
+            if !lower.starts_with("readme")
+                && !lower.starts_with("skin")
+                && total <= 80
+                && wordy * 4 >= total * 3
+                && first.chars().filter(|c| c.is_alphanumeric()).count() >= 2
+            {
                 name = Some(first.to_string());
             }
         }
@@ -317,5 +328,15 @@ mod tests {
         assert_eq!(d, None);
         let (n, _, _) = parse_metadata(|_| None, "fallback");
         assert_eq!(n, "fallback");
+    }
+
+    #[test]
+    fn readme_decoration_is_not_a_name() {
+        let readme = b"=========README=========\nThis skin was made...".as_slice();
+        let (n, _, _) = parse_metadata(|k| (k == "README.TXT").then_some(readme), "fallback");
+        assert_eq!(n, "fallback");
+        let readme = b"\n  GarfieldAmp v2.0\nby someone".as_slice();
+        let (n, _, _) = parse_metadata(|k| (k == "README.TXT").then_some(readme), "fallback");
+        assert_eq!(n, "GarfieldAmp v2.0");
     }
 }

@@ -486,3 +486,198 @@ mod tests {
         assert!(!out.is_empty());
     }
 }
+
+/// Decoders used only to verify the encoders end to end.
+#[cfg(test)]
+pub(crate) mod decode {
+    use super::Rgba;
+
+    pub fn base64(s: &[u8]) -> Vec<u8> {
+        let val = |c: u8| -> u32 {
+            match c {
+                b'A'..=b'Z' => u32::from(c - b'A'),
+                b'a'..=b'z' => u32::from(c - b'a') + 26,
+                b'0'..=b'9' => u32::from(c - b'0') + 52,
+                b'+' => 62,
+                _ => 63,
+            }
+        };
+        let mut out = Vec::new();
+        for q in s.chunks(4) {
+            let pad = q.iter().filter(|c| **c == b'=').count();
+            let n = q
+                .iter()
+                .take(4 - pad)
+                .fold(0u32, |acc, c| (acc << 6) | val(*c))
+                << (6 * pad);
+            let bytes = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
+            out.extend_from_slice(&bytes[..3 - pad]);
+        }
+        out
+    }
+
+    pub fn zlib(data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut dec = flate2::write::ZlibDecoder::new(&mut out);
+        std::io::Write::write_all(&mut dec, data).unwrap();
+        dec.finish().unwrap();
+        out
+    }
+
+    /// Concatenated payload of a kitty transmission plus its (s, v) size.
+    pub fn kitty(escapes: &str) -> (u32, u32, Vec<u8>) {
+        let (mut w, mut h) = (0, 0);
+        let mut payload = Vec::new();
+        for part in escapes.split("\x1b\\") {
+            let Some(start) = part.find("\x1b_G") else {
+                continue;
+            };
+            let Some((ctrl, data)) = part[start + 3..].split_once(';') else {
+                continue;
+            };
+            for kv in ctrl.split(',') {
+                match kv.split_once('=') {
+                    Some(("s", v)) => w = v.parse().unwrap(),
+                    Some(("v", v)) => h = v.parse().unwrap(),
+                    _ => {}
+                }
+            }
+            payload.extend_from_slice(data.as_bytes());
+        }
+        (w, h, zlib(&base64(&payload)))
+    }
+
+    /// Minimal sixel decoder: returns (w, h, pixels) with `None` = untouched.
+    pub fn sixel(s: &str) -> (usize, usize, Vec<Option<Rgba>>) {
+        let body = &s[s.find('q').unwrap() + 1..s.rfind("\x1b\\").unwrap()];
+        let b = body.as_bytes();
+        let mut i = 0;
+        let num = |i: &mut usize| -> usize {
+            let start = *i;
+            while *i < b.len() && b[*i].is_ascii_digit() {
+                *i += 1;
+            }
+            body[start..*i].parse().unwrap_or(0)
+        };
+        assert_eq!(b[i], b'"');
+        i += 1;
+        let mut dims = [0usize; 4];
+        for (k, d) in dims.iter_mut().enumerate() {
+            *d = num(&mut i);
+            if k < 3 {
+                assert_eq!(b[i], b';');
+                i += 1;
+            }
+        }
+        let (w, h) = (dims[2], dims[3]);
+        let mut px = vec![None; w * h];
+        let mut palette = vec![[0u8; 4]; 256];
+        let (mut x, mut band, mut color) = (0usize, 0usize, 0usize);
+        let pct = |v: usize| ((v * 255 + 50) / 100) as u8;
+        while i < b.len() {
+            match b[i] {
+                b'#' => {
+                    i += 1;
+                    color = num(&mut i);
+                    if i < b.len() && b[i] == b';' {
+                        i += 1;
+                        let _space = num(&mut i);
+                        let mut rgb = [0usize; 3];
+                        for c in &mut rgb {
+                            i += 1; // ';'
+                            *c = num(&mut i);
+                        }
+                        palette[color] = [pct(rgb[0]), pct(rgb[1]), pct(rgb[2]), 255];
+                    }
+                }
+                b'!' => {
+                    i += 1;
+                    let n = num(&mut i);
+                    let bits = b[i] - 63;
+                    for _ in 0..n {
+                        paint(&mut px, w, h, x, band, bits, palette[color]);
+                        x += 1;
+                    }
+                    i += 1;
+                }
+                b'$' => {
+                    x = 0;
+                    i += 1;
+                }
+                b'-' => {
+                    x = 0;
+                    band += 1;
+                    i += 1;
+                }
+                c @ 63..=126 => {
+                    paint(&mut px, w, h, x, band, c - 63, palette[color]);
+                    x += 1;
+                    i += 1;
+                }
+                _ => i += 1,
+            }
+        }
+        (w, h, px)
+    }
+
+    fn paint(
+        px: &mut [Option<Rgba>],
+        w: usize,
+        h: usize,
+        x: usize,
+        band: usize,
+        bits: u8,
+        c: Rgba,
+    ) {
+        for r in 0..6 {
+            let y = band * 6 + r;
+            if bits & (1 << r) != 0 && x < w && y < h {
+                px[y * w + x] = Some(c);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod roundtrip {
+    use super::*;
+
+    fn sample(w: usize, h: usize) -> Vec<Rgba> {
+        (0..w * h)
+            .map(|i| {
+                let (x, y) = (i % w, i / w);
+                // 16 colours on multiples of 51, which survive sixel's percent units.
+                [(x % 4 * 51) as u8, (y % 4 * 51) as u8, 204, 255]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn kitty_payload_decodes_to_the_original_pixels() {
+        let px = sample(7, 5);
+        let mut d = Deflater::default();
+        let z = d.zlib(px.as_flattened()).to_vec();
+        let mut out = Vec::new();
+        kitty_transmit(&mut out, 1, 7, 5, &z, -1, &mut Vec::new());
+        let (w, h, rgba) = decode::kitty(&String::from_utf8(out).unwrap());
+        assert_eq!((w, h), (7, 5));
+        assert_eq!(rgba, px.as_flattened());
+    }
+
+    #[test]
+    fn sixel_decodes_to_the_original_pixels() {
+        let mut px = sample(9, 13);
+        px[4] = [0, 0, 0, 0]; // transparent stays untouched
+        let mut out = Vec::new();
+        sixel(&mut out, 9, 13, &px, &mut SixelScratch::default());
+        let (w, h, back) = decode::sixel(&String::from_utf8(out).unwrap());
+        assert_eq!((w, h), (9, 13));
+        for (i, (a, b)) in px.iter().zip(&back).enumerate() {
+            if a[3] == 0 {
+                assert_eq!(*b, None, "pixel {i}");
+            } else {
+                assert_eq!(*b, Some(*a), "pixel {i}");
+            }
+        }
+    }
+}

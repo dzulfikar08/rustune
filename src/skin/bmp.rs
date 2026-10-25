@@ -224,7 +224,7 @@ pub fn decode(data: &[u8]) -> Result<Decoded, BmpError> {
             for y in 0..h {
                 let src_row = if top_down { y } else { h - 1 - y };
                 let Some(row) = pixels.get(src_row * row_bytes..(src_row + 1) * row_bytes) else {
-                    break;
+                    continue;
                 };
                 let dst = &mut out.pixels[y * w..(y + 1) * w];
                 for (x, px) in dst.iter_mut().enumerate() {
@@ -242,7 +242,7 @@ pub fn decode(data: &[u8]) -> Result<Decoded, BmpError> {
             for y in 0..h {
                 let src_row = if top_down { y } else { h - 1 - y };
                 let Some(row) = pixels.get(src_row * row_bytes..(src_row + 1) * row_bytes) else {
-                    break;
+                    continue;
                 };
                 let dst = &mut out.pixels[y * w..(y + 1) * w];
                 for (px, bgr) in dst.iter_mut().zip(row.as_chunks::<3>().0) {
@@ -256,7 +256,7 @@ pub fn decode(data: &[u8]) -> Result<Decoded, BmpError> {
             for y in 0..h {
                 let src_row = if top_down { y } else { h - 1 - y };
                 let Some(row) = pixels.get(src_row * row_bytes..(src_row + 1) * row_bytes) else {
-                    break;
+                    continue;
                 };
                 let dst = &mut out.pixels[y * w..(y + 1) * w];
                 for (px, raw) in dst.iter_mut().zip(row.chunks_exact(bytes)) {
