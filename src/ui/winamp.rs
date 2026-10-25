@@ -10,7 +10,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::Frame;
 
-use crate::app::{App, Mode, Status, Tab};
+use crate::app::{App, Mode, Status};
 use crate::gfx::{GfxPainter, Protocol};
 use crate::skin::{rgba_color, SkinColors, WinampSkin};
 use crate::ui::skin_bitmap::draw_halfblock;
@@ -746,35 +746,13 @@ fn render_footer(buf: &mut Buffer, area: Rect, app: &App, sc: &SkinColors) {
     let key = Style::default().fg(sc.led_on).bg(sc.chrome_dark);
     let label = Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark);
     fill(buf, Rect::new(area.x, y, area.width, 1), label);
-    let hints: &[(&str, &str)] = match app.mode {
-        Mode::Browse if app.tab == Tab::Online => &[
-            (" /", " search "),
-            ("j/k", " nav "),
-            ("Enter", " play "),
-            ("d", " dl "),
-            ("Space", " pause "),
-            ("Tab", " src "),
-            ("s", " settings "),
-            ("q", " quit"),
-        ],
-        Mode::Browse => &[
-            (" l", " open "),
-            ("z x c v b", " transport "),
-            ("Space", " pause "),
-            ("P", " playlist "),
-            ("e", " EQ "),
-            ("y", " lyrics "),
-            ("s", " settings "),
-            ("q", " quit"),
-        ],
-        Mode::Input => &[(" Enter", " submit "), ("Esc", " cancel")],
-        _ => &[],
-    };
-    let mut cx = area.x;
-    for (k, l) in hints {
-        cx = put(buf, cx, y, right, k, key);
-        cx = put(buf, cx, y, right, l, label);
-    }
+    super::palette::draw_hints(
+        buf,
+        Rect::new(area.x + 1, y, area.width.saturating_sub(1), 1),
+        app.hint_ctx(),
+        key,
+        label,
+    );
 }
 
 #[cfg(test)]

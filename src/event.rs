@@ -41,10 +41,12 @@ pub enum AppEvent {
     },
     DepsProbed(Deps),
     ScanComplete(Result<Vec<MediaItem>>),
-    /// Items resolved from command-line arguments or the open prompt.
+    /// Items resolved from command-line arguments, the open prompt or an
+    /// `Enqueue` command (`append`: add to a non-empty queue, don't replace).
     QueueResolved {
         items: Vec<MediaItem>,
         errors: Vec<String>,
+        append: bool,
     },
     SkinListFetched {
         token: u64,
@@ -70,4 +72,7 @@ pub enum AppEvent {
     /// A player command from outside the key handler (IPC socket, OS media
     /// controls); applied through `Controller::apply`.
     Command(crate::command::Command),
+    /// Answer once every earlier event is applied and observers have seen the
+    /// result, so an IPC client's next request reads fresh state.
+    Flush(std::sync::mpsc::SyncSender<()>),
 }

@@ -1,6 +1,5 @@
 //! Standard-theme equalizer panel: preamp + 10 band sliders, keyboard driven.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
@@ -11,6 +10,7 @@ use ratatui::{
 
 use crate::command::Command;
 use crate::eq_presets::PRESETS;
+use crate::keymap::{Action, Ctx};
 use crate::theme::Theme;
 use crate::view::{EqSettings, EQ_BANDS, EQ_MAX_DB};
 
@@ -21,50 +21,32 @@ const LABELS: [&str; SLOTS] = [
     "Pre", "60", "170", "310", "600", "1k", "3k", "6k", "12k", "14k", "16k",
 ];
 
-const HINTS: [(&str, &str); 5] = [
-    ("←→", "select"),
-    ("↑↓", "adjust"),
-    ("0", "reset"),
-    ("o", "on/off"),
-    ("[ ]", "preset"),
-];
-
 /// Label column width (right-aligned) and value column width (`+12.0`).
 const LABEL_W: u16 = 3;
 const VALUE_W: u16 = 5;
 
-/// Keys while the EQ panel is open (checked BEFORE transport keys). Returns
-/// the Command to apply, or None when the key is not an EQ key (then the app
-/// falls through to normal handling). Mutates only `focus` (0..SLOTS).
-///
-/// Focus moves (←/→, h/l) return `None` but change `focus`; callers treat a
-/// changed `focus` as a consumed key.
-pub fn handle_key(key: &KeyEvent, focus: &mut usize, eq: &EqSettings) -> Option<Command> {
-    if key
-        .modifiers
-        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-    {
-        return None;
-    }
+/// Command for an EQ action (panel sliders and the global preset keys).
+/// Slider moves change only `focus` (0..SLOTS) and return `None`, as do
+/// actions that are not EQ actions.
+pub fn handle(action: Action, focus: &mut usize, eq: &EqSettings) -> Option<Command> {
     let slot = (*focus).min(SLOTS - 1);
     let adjust = |delta: f32| Some(set_slot(slot, slot_db(eq, slot) + delta));
-    match key.code {
-        KeyCode::Left | KeyCode::Char('h') => {
+    match action {
+        Action::EqSlotPrev => {
             *focus = (slot + SLOTS - 1) % SLOTS;
             None
         }
-        KeyCode::Right | KeyCode::Char('l') => {
+        Action::EqSlotNext => {
             *focus = (slot + 1) % SLOTS;
             None
         }
-        KeyCode::Up | KeyCode::Char('k') => adjust(1.0),
-        KeyCode::Down | KeyCode::Char('j') => adjust(-1.0),
-        KeyCode::Char('K') => adjust(3.0),
-        KeyCode::Char('J') => adjust(-3.0),
-        KeyCode::Char('0') => Some(set_slot(slot, 0.0)),
-        KeyCode::Char('o') => Some(Command::ToggleEq),
-        KeyCode::Char('[') => Some(Command::EqPreset(step_preset(eq, false).to_string())),
-        KeyCode::Char(']') => Some(Command::EqPreset(step_preset(eq, true).to_string())),
+        Action::EqRaise => adjust(1.0),
+        Action::EqLower => adjust(-1.0),
+        Action::EqRaiseMore => adjust(3.0),
+        Action::EqLowerMore => adjust(-3.0),
+        Action::EqReset => Some(set_slot(slot, 0.0)),
+        Action::EqPresetPrev => Some(Command::EqPreset(step_preset(eq, false).to_string())),
+        Action::EqPresetNext => Some(Command::EqPreset(step_preset(eq, true).to_string())),
         _ => None,
     }
 }
@@ -134,13 +116,13 @@ pub fn render(frame: &mut Frame, area: Rect, eq: &EqSettings, focus: usize, them
 
     if show_hint {
         let rect = Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1);
-        let mut spans = Vec::with_capacity(HINTS.len() * 2);
-        for (i, (key, desc)) in HINTS.iter().enumerate() {
-            let sep = if i + 1 < HINTS.len() { "  " } else { "" };
-            spans.push(Span::styled(*key, theme.help_key));
-            spans.push(Span::styled(format!(" {desc}{sep}"), theme.help_desc));
-        }
-        frame.render_widget(Line::from(spans), rect);
+        super::palette::draw_hints(
+            frame.buffer_mut(),
+            rect,
+            Ctx::EQ,
+            theme.help_key,
+            theme.help_desc,
+        );
     }
 }
 
@@ -225,10 +207,20 @@ fn push_slider(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keymap;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::{backend::TestBackend, Terminal};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// A key press with the panel open, through the shared key table.
+    fn handle_key(event: &KeyEvent, focus: &mut usize, eq: &EqSettings) -> Option<Command> {
+        match keymap::lookup(Ctx::GLOBAL.or(Ctx::EQ).or(Ctx::LIBRARY), event)? {
+            Action::EqToggle => Action::EqToggle.command(),
+            action => handle(action, focus, eq),
+        }
     }
 
     fn row_text(terminal: &Terminal<TestBackend>, y: u16) -> String {
@@ -360,7 +352,11 @@ mod tests {
         assert!(row_text(&terminal, 2).contains("+0.0"));
         let last = row_text(&terminal, 11);
         assert!(last.contains("16k") && last.contains("-12.0"), "{last}");
-        assert!(row_text(&terminal, 12).contains("←→ select"));
+        let hint = row_text(&terminal, 12);
+        assert!(
+            hint.contains("→/l select") && hint.contains("Esc close"),
+            "{hint}"
+        );
 
         // The focused row (slot 1 = 60 Hz) carries the selection style.
         let buf = terminal.backend().buffer();

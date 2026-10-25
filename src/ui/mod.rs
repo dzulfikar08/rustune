@@ -1,9 +1,9 @@
 mod browse;
 mod eq;
-mod help;
 mod input;
 mod lyrics;
 mod onboarding;
+pub mod palette;
 mod player;
 mod results;
 mod settings;
@@ -12,7 +12,7 @@ mod skin_browser;
 pub mod skin_layout;
 mod winamp;
 
-pub use eq::handle_key as eq_key;
+pub use eq::handle as eq_action;
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
@@ -49,12 +49,25 @@ pub fn draw(
         Mode::Onboarding => onboarding::render(frame, area, app),
         Mode::Settings => settings::render(frame, area, app),
         Mode::SkinBrowser => skin_browser::render(frame, area, app),
-        Mode::Browse | Mode::Input if app.is_winamp() => {
+        // The palette replaces the skin: its images would cover the overlay.
+        Mode::Browse | Mode::Input if app.is_winamp() && app.palette.is_none() => {
             let view = app.player_view();
             winamp::draw(frame, app, app.winamp_skin.as_ref(), &view, winamp_ui, gfx);
             return true;
         }
+        Mode::Browse | Mode::Input if app.is_winamp() => {
+            let bottom = Rect::new(
+                area.x,
+                area.bottom().saturating_sub(1),
+                area.width,
+                area.height.min(1),
+            );
+            palette::render_hints(frame.buffer_mut(), bottom, app);
+        }
         Mode::Browse | Mode::Input => draw_standard(frame, app),
+    }
+    if app.palette.is_some() {
+        palette::render(frame, app, winamp_ui);
     }
     false
 }
@@ -63,7 +76,7 @@ pub fn draw(
 pub fn vis_visible(app: &App, winamp_ui: &WinampUiState, screen_height: u16) -> bool {
     match app.mode {
         Mode::Browse | Mode::Input if app.is_winamp() => {
-            winamp_ui.vis_mode != crate::winamp::VisMode::Off
+            app.palette.is_none() && winamp_ui.vis_mode != crate::winamp::VisMode::Off
         }
         Mode::Browse | Mode::Input => vis_height(app, screen_height) > 0,
         _ => false,
@@ -197,5 +210,5 @@ fn draw_standard(frame: &mut Frame, app: &mut App) {
 
     player::render(frame, player_chunks[0], player_chunks[1], app);
     input::render(frame, vertical[4], app);
-    help::render(frame, vertical[5], app);
+    palette::render_hints(frame.buffer_mut(), vertical[5], app);
 }

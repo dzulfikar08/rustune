@@ -149,10 +149,24 @@ impl Theme {
         vec![Self::dark(), Self::light(), Self::winamp()]
     }
 
-    pub fn from_name(name: &str) -> Self {
+    /// Built-in theme by name, case-insensitive.
+    pub fn find(name: &str) -> Option<Self> {
         Self::builtins()
             .into_iter()
             .find(|t| t.name.eq_ignore_ascii_case(name))
-            .unwrap_or_else(Self::dark)
+    }
+
+    pub fn from_name(name: &str) -> Self {
+        Self::find(name).unwrap_or_else(Self::dark)
+    }
+
+    /// The built-in theme after `name` in cycling order, wrapping.
+    pub fn next_after(name: &str) -> Self {
+        let mut builtins = Self::builtins();
+        let i = builtins
+            .iter()
+            .position(|t| t.name.eq_ignore_ascii_case(name))
+            .map_or(0, |i| (i + 1) % builtins.len());
+        builtins.swap_remove(i)
     }
 }

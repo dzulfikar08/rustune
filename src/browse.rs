@@ -5,7 +5,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::keymap::Action;
 
 use crate::media::MediaItem;
 use crate::providers::jellyfin::{AlbumSort, JellyfinClient};
@@ -698,42 +698,51 @@ impl Browser {
         level.selected = index.min(level.entries.len().saturating_sub(1));
     }
 
-    pub fn handle_key(&mut self, key: &KeyEvent, subscriptions: &[String]) -> BrowseOutcome {
+    /// A list action from the key table or the palette.
+    pub fn handle(&mut self, action: Action, subscriptions: &[String]) -> BrowseOutcome {
         self.set_subscriptions(subscriptions);
-        if key
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-        {
-            return BrowseOutcome::None;
-        }
         let selected = self.selected();
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => self.select(selected + 1),
-            KeyCode::Char('k') | KeyCode::Up => self.select(selected.saturating_sub(1)),
-            KeyCode::Char('g') | KeyCode::Home => self.select(0),
-            KeyCode::Char('G') | KeyCode::End => self.select(usize::MAX),
-            KeyCode::PageDown => self.select(selected.saturating_add(self.viewport)),
-            KeyCode::PageUp => self.select(selected.saturating_sub(self.viewport)),
-            KeyCode::Enter => return self.enter(),
-            KeyCode::Backspace | KeyCode::Esc => {
+        match action {
+            Action::Down => self.select(selected + 1),
+            Action::Up => self.select(selected.saturating_sub(1)),
+            Action::Top => self.select(0),
+            Action::Bottom => self.select(usize::MAX),
+            Action::PageDown => self.select(selected.saturating_add(self.viewport)),
+            Action::PageUp => self.select(selected.saturating_sub(self.viewport)),
+            Action::Activate => return self.enter(),
+            Action::Back => {
                 self.stack.pop();
             }
-            KeyCode::Char('/') => return BrowseOutcome::Prompt(prompt_label(self.kind)),
-            KeyCode::Char('a') => {
+            Action::ProviderSearch => return BrowseOutcome::Prompt(prompt_label(self.kind)),
+            Action::Enqueue => {
                 if let Some(Entry::Track { item, .. }) = self.top().selected_entry() {
                     return BrowseOutcome::Enqueue(item.clone());
                 }
             }
-            KeyCode::Char('A') => {
+            Action::PlayNext => {
                 if let Some(Entry::Track { item, .. }) = self.top().selected_entry() {
                     return BrowseOutcome::PlayNext(item.clone());
                 }
             }
-            KeyCode::Char('f') => return self.toggle_subscription(),
-            KeyCode::Char('r') => return self.reload(),
+            Action::Subscribe => return self.toggle_subscription(),
+            Action::Reload => return self.reload(),
             _ => {}
         }
         BrowseOutcome::None
+    }
+
+    /// A key press in a provider tab, through the shared key table.
+    #[cfg(test)]
+    pub fn handle_key(
+        &mut self,
+        key: &crossterm::event::KeyEvent,
+        subscriptions: &[String],
+    ) -> BrowseOutcome {
+        use crate::keymap::{lookup, Ctx};
+        match lookup(Ctx::PROVIDER.or(Ctx::PODCAST), key) {
+            Some(action) => self.handle(action, subscriptions),
+            None => BrowseOutcome::None,
+        }
     }
 
     /// Mouse click on row `index`: select it and open/play it.
@@ -904,6 +913,7 @@ impl Browser {
 mod tests {
     use super::*;
     use crate::media::SourceKind;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)

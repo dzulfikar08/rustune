@@ -12,12 +12,14 @@ use crate::browse::{BrowseOutcome, Browser};
 use crate::command::Command;
 use crate::config::Config;
 use crate::install::{Dep, Deps};
+use crate::keymap::{self, Action, Ctx};
 use crate::media::MediaItem;
 use crate::providers::lyrics::Lyrics;
 use crate::providers::ProviderKind;
 use crate::queue::Queue;
 use crate::skin::WinampSkin;
 use crate::theme::Theme;
+use crate::ui::palette::{Palette, PaletteOutcome};
 use crate::view::{EqSettings, PlayStatus, PlayerView, StreamFormat};
 use crate::vis::analyzer::{Analyzer, AnalyzerConfig};
 use crate::vis::palette::VisPalette;
@@ -25,9 +27,6 @@ use crate::vis::VisMode;
 
 /// How long informational status messages stay visible.
 const INFO_TTL: Duration = Duration::from_secs(4);
-const SEEK_SMALL: i64 = 5;
-const SEEK_LARGE: i64 = 30;
-const VOLUME_STEP: f32 = 0.05;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
@@ -180,6 +179,8 @@ pub enum BrowseAction {
     NextPage,
     PrevPage,
     OpenSettings,
+    /// Stop and empty the queue.
+    ClearQueue,
     /// Next (`true`) or previous source tab.
     SwitchTab(bool),
     /// Something happened in a provider tab's browser.
@@ -278,6 +279,8 @@ pub struct App {
     /// The analyzer uses the Winamp configuration.
     analyzer_winamp: bool,
     pub deps: Deps,
+    /// Command palette overlay (`?` / Ctrl+K), when open.
+    pub palette: Option<Palette>,
 }
 
 /// "Artist - Title" when the artist is known.
@@ -372,6 +375,7 @@ impl App {
             vis_fit: (0, VisMode::None),
             analyzer_winamp,
             deps: Deps::default(),
+            palette: None,
         }
     }
 
@@ -578,215 +582,219 @@ impl App {
 
     // ── keys ─────────────────────────────────────────────────────────────
 
-    /// Player keys shared by every browse view (Winamp transport layout).
-    fn transport_command(key: &KeyEvent) -> Option<Command> {
-        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-        Some(match key.code {
-            KeyCode::Char('q') => Command::Quit,
-            KeyCode::Char('z') => Command::Prev,
-            KeyCode::Char('x') => Command::Play,
-            KeyCode::Char('c') => Command::TogglePause,
-            KeyCode::Char('v') => Command::Stop,
-            KeyCode::Char('b') => Command::Next,
-            KeyCode::Char(' ') => Command::TogglePause,
-            KeyCode::Left => Command::SeekBy(if shift { -SEEK_LARGE } else { -SEEK_SMALL }),
-            KeyCode::Right => Command::SeekBy(if shift { SEEK_LARGE } else { SEEK_SMALL }),
-            KeyCode::Char('+' | '=') => Command::VolumeBy(VOLUME_STEP),
-            KeyCode::Char('-') => Command::VolumeBy(-VOLUME_STEP),
-            KeyCode::Char('S') => Command::ToggleShuffle,
-            KeyCode::Char('R') => Command::CycleRepeat,
-            KeyCode::Char('e') => Command::ToggleEqWindow,
-            KeyCode::Char('P') => Command::TogglePlaylistWindow,
-            KeyCode::Char('l') => Command::Eject,
-            KeyCode::Char('V') => Command::CycleVis,
-            KeyCode::Char('y') => Command::ToggleLyrics,
-            _ => return None,
+    /// Key contexts live in the browse view (see `keymap::Ctx`).
+    pub fn active_ctx(&self) -> Ctx {
+        let mut ctx = Ctx::GLOBAL;
+        if self.show_eq && !self.is_winamp() {
+            ctx = ctx.or(Ctx::EQ);
+        }
+        ctx.or(if self.show_playlist {
+            Ctx::PLAYLIST
+        } else {
+            match self.tab {
+                Tab::Local => Ctx::LIBRARY,
+                Tab::Online => Ctx::LIBRARY.or(Ctx::ONLINE),
+                Tab::Provider(ProviderKind::Podcast) => Ctx::PROVIDER.or(Ctx::PODCAST),
+                Tab::Provider(_) => Ctx::PROVIDER,
+            }
         })
     }
 
-    pub fn handle_browse_key(&mut self, key: KeyEvent) -> BrowseAction {
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
-            return match key.code {
-                KeyCode::Char('c') => BrowseAction::Cmd(Command::Quit),
-                _ => BrowseAction::None,
-            };
-        }
-        if self.show_eq && !self.is_winamp() {
-            let before = self.eq_focus;
-            if let Some(cmd) = crate::ui::eq_key(&key, &mut self.eq_focus, &self.eq) {
-                return BrowseAction::Cmd(cmd);
-            }
-            if self.eq_focus != before {
-                return BrowseAction::None;
-            }
-            if key.code == KeyCode::Esc {
-                return BrowseAction::Cmd(Command::ToggleEqWindow);
-            }
-        }
-        if let Some(cmd) = Self::transport_command(&key) {
-            return BrowseAction::Cmd(cmd);
-        }
-        let provider_tab = matches!(self.tab, Tab::Provider(_)) && !self.show_playlist;
-        match key.code {
-            KeyCode::Char('/') if !provider_tab => {
-                self.open_prompt(InputPurpose::Search);
-                BrowseAction::None
-            }
-            KeyCode::Char('w') => {
-                self.open_prompt(InputPurpose::SavePlaylist);
-                BrowseAction::None
-            }
-            KeyCode::Char('s') => BrowseAction::OpenSettings,
-            KeyCode::Tab => BrowseAction::SwitchTab(true),
-            KeyCode::BackTab => BrowseAction::SwitchTab(false),
-            _ if self.show_playlist => self.playlist_key(key),
-            _ if provider_tab => {
-                let subs = self.config.providers.podcast.subscriptions.clone();
-                match self.browser_mut() {
-                    Some(browser) => BrowseAction::Browse(browser.handle_key(&key, &subs)),
-                    None => BrowseAction::None,
-                }
-            }
-            _ => self.results_key(key),
+    /// Context whose bindings the hint bar shows (the EQ panel has its own).
+    pub fn hint_ctx(&self) -> Ctx {
+        if self.palette.is_some() {
+            Ctx::PALETTE
+        } else if self.mode == Mode::Input {
+            Ctx::PROMPT
+        } else {
+            self.active_ctx().without(Ctx::EQ)
         }
     }
 
-    fn playlist_key(&mut self, key: KeyEvent) -> BrowseAction {
+    pub fn open_palette(&mut self) {
+        self.palette = Some(Palette::new(self.active_ctx()));
+    }
+
+    pub fn handle_browse_key(&mut self, key: KeyEvent) -> BrowseAction {
+        if let Some(palette) = &mut self.palette {
+            return match palette.handle_key(&key) {
+                PaletteOutcome::Stay => BrowseAction::None,
+                PaletteOutcome::Close => {
+                    self.palette = None;
+                    BrowseAction::None
+                }
+                PaletteOutcome::Run(action) => {
+                    self.palette = None;
+                    self.run_action(action)
+                }
+            };
+        }
+        match keymap::lookup(self.active_ctx(), &key) {
+            Some(action) => self.run_action(action),
+            None => BrowseAction::None,
+        }
+    }
+
+    /// Carry out a browse-view action (from a key or the palette).
+    pub fn run_action(&mut self, action: Action) -> BrowseAction {
+        if let Some(cmd) = action.command() {
+            return BrowseAction::Cmd(cmd);
+        }
+        match action {
+            Action::EqPresetPrev
+            | Action::EqPresetNext
+            | Action::EqSlotPrev
+            | Action::EqSlotNext
+            | Action::EqRaise
+            | Action::EqLower
+            | Action::EqRaiseMore
+            | Action::EqLowerMore
+            | Action::EqReset => crate::ui::eq_action(action, &mut self.eq_focus, &self.eq)
+                .map_or(BrowseAction::None, BrowseAction::Cmd),
+            Action::Search => self.prompt_with(InputPurpose::Search, ""),
+            Action::CommandPrompt => self.prompt_with(InputPurpose::Search, ":"),
+            Action::JumpToTime => self.prompt_with(InputPurpose::Search, ":seek "),
+            Action::SavePlaylist => self.prompt_with(InputPurpose::SavePlaylist, ""),
+            Action::Settings => BrowseAction::OpenSettings,
+            Action::NextTab => BrowseAction::SwitchTab(true),
+            Action::PrevTab => BrowseAction::SwitchTab(false),
+            Action::ClearQueue => BrowseAction::ClearQueue,
+            Action::Palette => {
+                self.open_palette();
+                BrowseAction::None
+            }
+            _ if self.show_playlist => self.playlist_action(action),
+            _ if matches!(self.tab, Tab::Provider(_)) => {
+                let subs = self.config.providers.podcast.subscriptions.clone();
+                match self.browser_mut() {
+                    Some(browser) => BrowseAction::Browse(browser.handle(action, &subs)),
+                    None => BrowseAction::None,
+                }
+            }
+            _ => self.results_action(action),
+        }
+    }
+
+    fn prompt_with(&mut self, purpose: InputPurpose, text: &str) -> BrowseAction {
+        self.open_prompt(purpose);
+        self.insert_text(text);
+        BrowseAction::None
+    }
+
+    /// Rows a page key moves in the main list.
+    fn page_rows(&self) -> usize {
+        usize::from(self.layout_rects.results.height.saturating_sub(2).max(1))
+    }
+
+    fn playlist_action(&mut self, action: Action) -> BrowseAction {
         let len = self.queue.len();
         let cursor = self.queue.cursor();
         if len == 0 {
             return BrowseAction::None;
         }
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                BrowseAction::Cmd(Command::Select((cursor + 1).min(len - 1)))
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                BrowseAction::Cmd(Command::Select(cursor.saturating_sub(1)))
-            }
-            KeyCode::Char('g') | KeyCode::Home => BrowseAction::Cmd(Command::Select(0)),
-            KeyCode::Char('G') | KeyCode::End => BrowseAction::Cmd(Command::Select(len - 1)),
-            KeyCode::Enter => BrowseAction::Cmd(Command::PlayIndex(cursor)),
-            KeyCode::Char('J') if cursor + 1 < len => BrowseAction::MoveInQueue {
+        let last = len - 1;
+        let select = |i: usize| BrowseAction::Cmd(Command::Select(i.min(last)));
+        match action {
+            Action::Down => select(cursor + 1),
+            Action::Up => select(cursor.saturating_sub(1)),
+            Action::Top => select(0),
+            Action::Bottom => select(last),
+            Action::PageDown => select(cursor.saturating_add(self.page_rows())),
+            Action::PageUp => select(cursor.saturating_sub(self.page_rows())),
+            Action::Activate => BrowseAction::Cmd(Command::PlayIndex(cursor)),
+            Action::MoveDown if cursor < last => BrowseAction::MoveInQueue {
                 from: cursor,
                 to: cursor + 1,
             },
-            KeyCode::Char('K') if cursor > 0 => BrowseAction::MoveInQueue {
+            Action::MoveUp if cursor > 0 => BrowseAction::MoveInQueue {
                 from: cursor,
                 to: cursor - 1,
             },
-            KeyCode::Char('D') | KeyCode::Delete => BrowseAction::RemoveFromQueue(cursor),
+            Action::Remove => BrowseAction::RemoveFromQueue(cursor),
             _ => BrowseAction::None,
         }
     }
 
-    fn results_key(&mut self, key: KeyEvent) -> BrowseAction {
-        let online = self.tab == Tab::Online;
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
+    fn results_action(&mut self, action: Action) -> BrowseAction {
+        let Some(last) = self.results.len().checked_sub(1) else {
+            return match action {
+                Action::NextPage => BrowseAction::NextPage,
+                Action::PrevPage => BrowseAction::PrevPage,
+                _ => BrowseAction::None,
+            };
+        };
+        let current = self.selected_index().unwrap_or(0);
+        let target = match action {
+            Action::Down => {
                 self.select_next();
-                BrowseAction::None
+                return BrowseAction::None;
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            Action::Up => {
                 self.select_prev();
-                BrowseAction::None
+                return BrowseAction::None;
             }
-            KeyCode::Char('g') | KeyCode::Home => {
-                if !self.results.is_empty() {
-                    self.list_state.select(Some(0));
-                }
-                BrowseAction::None
-            }
-            KeyCode::Char('G') | KeyCode::End => {
-                if !self.results.is_empty() {
-                    self.list_state.select(Some(self.results.len() - 1));
-                }
-                BrowseAction::None
-            }
-            KeyCode::Char('n') if online => BrowseAction::NextPage,
-            KeyCode::Char('p') if online => BrowseAction::PrevPage,
-            KeyCode::Char('d') if online && self.downloading_title.is_none() => {
-                match self.selected_result() {
-                    Some(r) => BrowseAction::Download(r.id.clone(), r.title.clone()),
-                    None => BrowseAction::None,
+            Action::Top => 0,
+            Action::Bottom => last,
+            Action::PageDown => current.saturating_add(self.page_rows()).min(last),
+            Action::PageUp => current.saturating_sub(self.page_rows()),
+            Action::NextPage => return BrowseAction::NextPage,
+            Action::PrevPage => return BrowseAction::PrevPage,
+            Action::Download => {
+                return match self.selected_result() {
+                    Some(r) if self.downloading_title.is_none() => {
+                        BrowseAction::Download(r.id.clone(), r.title.clone())
+                    }
+                    _ => BrowseAction::None,
                 }
             }
-            KeyCode::Enter => self
-                .selected_index()
-                .map_or(BrowseAction::None, BrowseAction::PlayResult),
-            KeyCode::Char('a') => self
-                .selected_index()
-                .map_or(BrowseAction::None, BrowseAction::Enqueue),
-            KeyCode::Char('A') => self
-                .selected_index()
-                .map_or(BrowseAction::None, BrowseAction::PlayNext),
-            _ => BrowseAction::None,
-        }
+            Action::Activate => return BrowseAction::PlayResult(current),
+            Action::Enqueue => return BrowseAction::Enqueue(current),
+            Action::PlayNext => return BrowseAction::PlayNext(current),
+            _ => return BrowseAction::None,
+        };
+        self.list_state.select(Some(target));
+        BrowseAction::None
     }
 
     pub fn handle_input_key(&mut self, key: KeyEvent) -> InputAction {
+        let Some(action) = keymap::lookup(Ctx::PROMPT, &key) else {
+            if let KeyCode::Char(c) = key.code {
+                if !key.modifiers.contains(KeyModifiers::CONTROL) {
+                    self.insert_char(c);
+                }
+            }
+            return InputAction::None;
+        };
         let search = self.input_purpose == InputPurpose::Search;
-        match key.code {
-            KeyCode::Esc => {
-                self.mode = Mode::Browse;
-                InputAction::None
-            }
-            KeyCode::Enter => {
-                let text = self.input_text.trim().to_string();
-                if text.is_empty() {
-                    return InputAction::None;
-                }
-                self.mode = Mode::Browse;
-                if !search {
-                    return InputAction::Submit(self.input_purpose, text);
-                }
-                if self.input_history.last() != Some(&text) {
-                    self.input_history.push(text.clone());
-                }
-                self.history_index = self.input_history.len();
-                if let Some(cmd) = text.strip_prefix(':') {
-                    return InputAction::Colon(cmd.trim().to_string());
-                }
-                self.page = 0;
-                InputAction::Submit(InputPurpose::Search, text)
-            }
-            KeyCode::Backspace => {
-                self.delete_before_cursor();
-                InputAction::None
-            }
-            KeyCode::Delete => {
+        match action {
+            Action::Cancel => self.mode = Mode::Browse,
+            Action::Submit => return self.submit_input(search),
+            Action::DeleteBack => self.delete_before_cursor(),
+            Action::DeleteForward => {
                 if let Some((idx, _)) = self.input_text.char_indices().nth(self.input_cursor) {
                     self.input_text.remove(idx);
                 }
-                InputAction::None
             }
-            KeyCode::Left => {
-                self.input_cursor = self.input_cursor.saturating_sub(1);
-                InputAction::None
-            }
-            KeyCode::Right => {
+            Action::CursorLeft => self.input_cursor = self.input_cursor.saturating_sub(1),
+            Action::CursorRight => {
                 if self.input_cursor < self.input_text.chars().count() {
                     self.input_cursor += 1;
                 }
-                InputAction::None
             }
-            KeyCode::Home => {
+            Action::LineStart => self.input_cursor = 0,
+            Action::LineEnd => self.input_cursor = self.input_text.chars().count(),
+            Action::ClearLine => {
+                self.input_text.clear();
                 self.input_cursor = 0;
-                InputAction::None
             }
-            KeyCode::End => {
-                self.input_cursor = self.input_text.chars().count();
-                InputAction::None
-            }
-            KeyCode::Up if search => {
+            Action::HistoryPrev if search => {
                 if self.history_index > 0 {
                     self.history_index -= 1;
                     self.input_text = self.input_history[self.history_index].clone();
                     self.input_cursor = self.input_text.chars().count();
                 }
-                InputAction::None
             }
-            KeyCode::Down if search => {
+            Action::HistoryNext if search => {
                 if self.history_index + 1 < self.input_history.len() {
                     self.history_index += 1;
                     self.input_text = self.input_history[self.history_index].clone();
@@ -795,25 +803,38 @@ impl App {
                     self.input_text.clear();
                 }
                 self.input_cursor = self.input_text.chars().count();
-                InputAction::None
             }
-            KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                match c {
-                    'a' => self.input_cursor = 0,
-                    'e' => self.input_cursor = self.input_text.chars().count(),
-                    'u' => {
-                        self.input_text.clear();
-                        self.input_cursor = 0;
-                    }
-                    _ => {}
-                }
-                InputAction::None
-            }
-            KeyCode::Char(c) => {
-                self.insert_char(c);
-                InputAction::None
-            }
-            _ => InputAction::None,
+            _ => {}
+        }
+        InputAction::None
+    }
+
+    fn submit_input(&mut self, search: bool) -> InputAction {
+        let text = self.input_text.trim().to_string();
+        if text.is_empty() {
+            return InputAction::None;
+        }
+        self.mode = Mode::Browse;
+        if !search {
+            return InputAction::Submit(self.input_purpose, text);
+        }
+        if self.input_history.last() != Some(&text) {
+            self.input_history.push(text.clone());
+        }
+        self.history_index = self.input_history.len();
+        if let Some(cmd) = text.strip_prefix(':') {
+            return InputAction::Colon(cmd.trim().to_string());
+        }
+        self.page = 0;
+        InputAction::Submit(InputPurpose::Search, text)
+    }
+
+    /// Switch to `theme` and remember it in the config.
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme;
+        self.config.theme = self.theme.name.clone();
+        if !self.is_winamp() {
+            self.winamp_skin = None;
         }
     }
 
@@ -844,16 +865,7 @@ impl App {
                 SettingsAction::None
             }
             KeyCode::Enter if self.settings_field == SettingsField::Theme => {
-                let builtins = Theme::builtins();
-                let current_idx = builtins
-                    .iter()
-                    .position(|t| t.name == self.theme.name)
-                    .unwrap_or(0);
-                self.theme = builtins[(current_idx + 1) % builtins.len()].clone();
-                self.config.theme = self.theme.name.clone();
-                if !self.is_winamp() {
-                    self.winamp_skin = None;
-                }
+                self.set_theme(Theme::next_after(&self.theme.name));
                 SettingsAction::ThemeChanged
             }
             KeyCode::Char('i')
@@ -1453,6 +1465,87 @@ mod tests {
             cmd(a.handle_browse_key(key(KeyCode::Char('b')))),
             Some(Command::Next)
         );
+    }
+
+    #[test]
+    fn palette_opens_filters_and_runs_actions() {
+        let mut a = app();
+        assert!(matches!(
+            a.handle_browse_key(shift(KeyCode::Char('?'))),
+            BrowseAction::None
+        ));
+        assert!(a.palette.is_some());
+        // Keys go to the palette filter, not the player.
+        for c in "shuffle".chars() {
+            assert!(matches!(
+                a.handle_browse_key(key(KeyCode::Char(c))),
+                BrowseAction::None
+            ));
+        }
+        assert_eq!(
+            cmd(a.handle_browse_key(key(KeyCode::Enter))),
+            Some(Command::ToggleShuffle)
+        );
+        assert!(a.palette.is_none(), "running closes the palette");
+
+        // View actions run like their keys: search opens the prompt.
+        a.handle_browse_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL));
+        for c in "search".chars() {
+            a.handle_browse_key(key(KeyCode::Char(c)));
+        }
+        a.handle_browse_key(key(KeyCode::Enter));
+        assert_eq!(
+            (a.mode.clone(), a.input_purpose),
+            (Mode::Input, InputPurpose::Search)
+        );
+
+        a.mode = Mode::Browse;
+        a.open_palette();
+        a.handle_browse_key(key(KeyCode::Esc));
+        assert!(a.palette.is_none());
+    }
+
+    #[test]
+    fn theme_command_and_jump_prompts() {
+        let mut a = app();
+        assert_eq!(
+            cmd(a.handle_browse_key(key(KeyCode::Char('t')))),
+            Some(Command::CycleTheme)
+        );
+        a.handle_browse_key(shift(KeyCode::Char(':')));
+        assert_eq!((a.mode.clone(), a.input_text.as_str()), (Mode::Input, ":"));
+        a.mode = Mode::Browse;
+        a.handle_browse_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+        assert_eq!(a.input_text, ":seek ");
+        a.insert_text("1:30");
+        assert!(matches!(
+            a.handle_input_key(key(KeyCode::Enter)),
+            InputAction::Colon(s) if s == "seek 1:30"
+        ));
+    }
+
+    #[test]
+    fn page_keys_and_global_eq_keys() {
+        let mut a = app();
+        a.results = (0..50).map(item).collect();
+        a.layout_rects.results = Rect::new(0, 0, 40, 12);
+        a.list_state.select(Some(0));
+        a.handle_browse_key(key(KeyCode::PageDown));
+        assert_eq!(a.list_state.selected(), Some(10));
+        a.handle_browse_key(key(KeyCode::End));
+        a.handle_browse_key(key(KeyCode::PageDown));
+        assert_eq!(a.list_state.selected(), Some(49));
+        a.handle_browse_key(key(KeyCode::PageUp));
+        assert_eq!(a.list_state.selected(), Some(39));
+        // EQ on/off and presets work without the panel.
+        assert_eq!(
+            cmd(a.handle_browse_key(key(KeyCode::Char('o')))),
+            Some(Command::ToggleEq)
+        );
+        assert!(matches!(
+            cmd(a.handle_browse_key(key(KeyCode::Char(']')))),
+            Some(Command::EqPreset(_))
+        ));
     }
 
     #[test]

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::media::MediaItem;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum PlayStatus {
     #[default]
     Stopped,
