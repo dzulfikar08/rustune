@@ -24,7 +24,8 @@ const FINE_PHASES: usize = 256;
 /// The kernel is precomputed per output phase, so an output sample costs one
 /// contiguous dot product per channel over planar history. Flat (+-0.001 dB)
 /// to 20 kHz-equivalent with the stopband (>= 90 dB) starting at the lower
-/// Nyquist, for any ratio up to `MAX_TAPS`.
+/// Nyquist, as long as the kernel fits in `MAX_TAPS` (downsampling by up to
+/// about 8x).
 pub struct Resampler {
     channels: usize,
     /// Taps per phase row (multiple of `LANES`), centred on `half`.
@@ -99,7 +100,7 @@ impl Resampler {
         let width = want.max((ATTEN_DB - 7.95) / (14.36 * (taps - 1) as f64));
         let atten = 14.36 * width * (taps - 1) as f64 + 7.95;
         let beta = 0.1102 * (atten - 8.7);
-        let fc = stop - width / 2.0;
+        let fc = (stop - width / 2.0).max(stop / 2.0);
         let half = taps / 2;
         let fine = den > MAX_EXACT_PHASES;
         let (rows, per) = if fine {
@@ -517,65 +518,5 @@ mod tests {
                  gain at 20 kHz-equiv {edge:+.4} dB, stopband/spurious {worst:.1} dB"
             );
         }
-    }
-
-    #[inline(always)]
-    fn dot_n<const N: usize>(a: &[f32], b: &[f32]) -> f32 {
-        let mut acc = [0.0f32; N];
-        for (x, y) in a.as_chunks::<N>().0.iter().zip(b.as_chunks::<N>().0) {
-            for ((s, x), y) in acc.iter_mut().zip(x).zip(y) {
-                *s += x * y;
-            }
-        }
-        acc.iter().sum()
-    }
-
-    #[inline(always)]
-    fn dot_fma<const N: usize>(a: &[f32], b: &[f32]) -> f32 {
-        let mut acc = [0.0f32; N];
-        for (x, y) in a.as_chunks::<N>().0.iter().zip(b.as_chunks::<N>().0) {
-            for ((s, x), y) in acc.iter_mut().zip(x).zip(y) {
-                *s = x.mul_add(*y, *s);
-            }
-        }
-        acc.iter().sum()
-    }
-
-    fn time_dot(name: &str, f: impl Fn(&[f32], &[f32]) -> f32) {
-        let r = Resampler::new(44_100, 48_000, 2);
-        let l: Vec<f32> = (0..8192).map(|i| (i as f32 * 0.01).sin()).collect();
-        let rr: Vec<f32> = (0..8192).map(|i| (i as f32 * 0.013).cos()).collect();
-        let n = 48_000 * 60;
-        let taps = r.taps;
-        let mut best = f64::MAX;
-        let mut s = 0.0f32;
-        for _ in 0..5 {
-            let t = std::time::Instant::now();
-            for i in 0..n {
-                let row = r.row(i % 160);
-                let p = std::hint::black_box(i % 8000);
-                s += f(row, &l[p..p + taps]) + f(row, &rr[p..p + taps]);
-            }
-            best = best.min(t.elapsed().as_secs_f64());
-        }
-        println!(
-            "bench dot {name}: {:.1} ns/frame ({s})",
-            best * 1e9 / n as f64
-        );
-    }
-
-    #[test]
-    #[ignore = "experiment"]
-    fn bench_dot_variants() {
-        time_dot("plain 16", dot);
-        time_dot("plain 8", dot_n::<8>);
-        time_dot("plain 4", dot_n::<4>);
-        if cfg!(target_arch = "aarch64") {
-            time_dot("fma 16", dot_fma::<16>);
-            time_dot("fma 8", dot_fma::<8>);
-            time_dot("fma 4", dot_fma::<4>);
-        }
-        time_dot("plain 16 again", dot);
-        time_dot("plain 8 again", dot_n::<8>);
     }
 }
