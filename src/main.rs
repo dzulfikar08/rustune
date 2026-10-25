@@ -14,6 +14,8 @@ mod theme;
 mod ui;
 #[allow(dead_code)]
 mod view;
+#[allow(dead_code)]
+mod vis;
 
 use std::sync::Arc;
 use std::time::Duration;
