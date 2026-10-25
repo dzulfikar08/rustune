@@ -123,10 +123,7 @@ fn draw_standard(frame: &mut Frame, app: &mut App) {
 
     app.layout_rects = LayoutRects {
         results: results_area,
-        player_info: info,
         player_bar: player_chunks[1],
-        input: vertical[4],
-        help: vertical[5],
         pause_button: Rect::new(info.x, info.y, 4, 1),
         prev_page: Rect::new(
             results_area.x + results_area.width.saturating_sub(6),

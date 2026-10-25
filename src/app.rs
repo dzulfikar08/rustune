@@ -105,13 +105,9 @@ pub struct PlaybackState {
 
 /// Layout rects for mouse hit-testing (written by the renderers).
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)] // `player_info`, `input`, `help` are recorded for renderers; not hit-tested yet.
 pub struct LayoutRects {
     pub results: Rect,
-    pub player_info: Rect,
     pub player_bar: Rect,
-    pub input: Rect,
-    pub help: Rect,
     pub pause_button: Rect,
     pub prev_page: Rect,
     pub next_page: Rect,

@@ -72,11 +72,6 @@ impl Ring {
         self.mask + 1
     }
 
-    #[cfg(test)]
-    pub fn channels(&self) -> usize {
-        self.channels
-    }
-
     /// Samples above which the ring counts as "primed" and below which a parked
     /// producer is woken. Frame aligned.
     pub fn threshold(&self) -> usize {
