@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
-use crate::app::SkinEntry;
+use crate::skin_browser::SkinEntry;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 const READ_TIMEOUT: Duration = Duration::from_secs(20);
@@ -111,13 +111,18 @@ pub fn sanitize_skin_filename(raw: &str, md5: &str) -> String {
     format!("{stem}.wsz")
 }
 
+/// Whether `md5` is a 32-digit hex skin id (safe to use in URLs and paths).
+pub fn is_skin_md5(md5: &str) -> bool {
+    md5.len() == 32 && md5.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 fn parse_skin_nodes(nodes: &[Value], local: &[String]) -> Vec<SkinEntry> {
     nodes
         .iter()
         .filter(|s| !s["nsfw"].as_bool().unwrap_or(false))
         .filter_map(|s| {
             let md5 = s["md5"].as_str()?.to_ascii_lowercase();
-            if md5.len() != 32 || !md5.chars().all(|c| c.is_ascii_hexdigit()) {
+            if !is_skin_md5(&md5) {
                 return None;
             }
             let raw = s["filename"].as_str().unwrap_or("");
@@ -161,32 +166,97 @@ pub fn list_skins(dir: &Path) -> Vec<PathBuf> {
     skins
 }
 
-/// One page of the approved skin list.
-pub fn fetch_skin_list(offset: usize, limit: usize, skins_dir: &Path) -> Result<SkinPage> {
-    let query = json!({
-        "query": "query($first: Int!, $offset: Int!) { skins(first: $first, offset: $offset, filter: APPROVED) { nodes { md5 filename nsfw average_color } count } }",
-        "variables": { "first": limit, "offset": offset }
-    });
-    let body = post_json(WEBAMP_GRAPHQL, &query)?;
-    let skins = &body["data"]["skins"];
+/// Which museum listing the online browser pages through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkinListing {
+    /// Every classic skin, in skins.webamp.org order.
+    Museum,
+    /// The museum's hand-approved subset.
+    Curated,
+}
+
+/// The `data.<field>` value of a GraphQL response, or the server's error.
+fn graphql_data<'a>(body: &'a Value, field: &str) -> Result<&'a Value> {
+    let data = &body["data"][field];
+    if data.is_null() {
+        if let Some(msg) = body["errors"][0]["message"].as_str() {
+            anyhow::bail!("skins.webamp.org: {msg}");
+        }
+        anyhow::bail!("Unexpected response from skins.webamp.org");
+    }
+    Ok(data)
+}
+
+/// Parse a `skins { nodes count }` page requested at `offset`. NSFW skins are
+/// dropped, but paging advances by the server's page so none are skipped.
+fn parse_skin_list(
+    body: &Value,
+    offset: usize,
+    limit: usize,
+    local: &[String],
+) -> Result<SkinPage> {
+    let skins = graphql_data(body, "skins")?;
     let nodes = skins["nodes"]
         .as_array()
         .context("Unexpected response from skins.webamp.org")?;
     let total = skins["count"].as_u64().map(|c| c as usize);
     let next_offset = offset + nodes.len();
-    let has_more = match total {
-        Some(t) => next_offset < t,
-        None => nodes.len() == limit,
-    };
+    let has_more = !nodes.is_empty()
+        && match total {
+            Some(t) => next_offset < t,
+            None => nodes.len() == limit,
+        };
     Ok(SkinPage {
-        entries: parse_skin_nodes(nodes, &local_skin_names(skins_dir)),
+        entries: parse_skin_nodes(nodes, local),
         next_offset,
         total,
         has_more,
     })
 }
 
-/// One page of full-text skin search results.
+/// Parse a `search_classic_skins` page requested at `offset` (no total).
+fn parse_skin_search(
+    body: &Value,
+    offset: usize,
+    limit: usize,
+    local: &[String],
+) -> Result<SkinPage> {
+    let nodes = graphql_data(body, "search_classic_skins")?
+        .as_array()
+        .context("Unexpected response from skins.webamp.org")?;
+    Ok(SkinPage {
+        entries: parse_skin_nodes(nodes, local),
+        next_offset: offset + nodes.len(),
+        total: None,
+        has_more: limit > 0 && nodes.len() == limit,
+    })
+}
+
+const SKIN_FIELDS: &str = "md5 filename nsfw average_color";
+
+/// One page of the museum listing.
+pub fn fetch_skin_list(
+    listing: SkinListing,
+    offset: usize,
+    limit: usize,
+    skins_dir: &Path,
+) -> Result<SkinPage> {
+    // The API rejects `sort: MUSEUM` combined with a filter.
+    let args = match listing {
+        SkinListing::Museum => "sort: MUSEUM",
+        SkinListing::Curated => "filter: APPROVED",
+    };
+    let query = json!({
+        "query": format!(
+            "query($first: Int!, $offset: Int!) {{ skins(first: $first, offset: $offset, {args}) {{ nodes {{ {SKIN_FIELDS} }} count }} }}"
+        ),
+        "variables": { "first": limit, "offset": offset }
+    });
+    let body = post_json(WEBAMP_GRAPHQL, &query)?;
+    parse_skin_list(&body, offset, limit, &local_skin_names(skins_dir))
+}
+
+/// One page of full-text search over every classic skin, NSFW excluded.
 pub fn search_skins(
     query: &str,
     offset: usize,
@@ -194,32 +264,29 @@ pub fn search_skins(
     skins_dir: &Path,
 ) -> Result<SkinPage> {
     let gql = json!({
-        "query": "query($q: String!, $first: Int!, $offset: Int!) { search_skins(first: $first, offset: $offset, query: $q) { md5 filename nsfw average_color } }",
+        "query": format!(
+            "query($q: String!, $first: Int!, $offset: Int!) {{ search_classic_skins(first: $first, offset: $offset, query: $q, nsfw: false) {{ {SKIN_FIELDS} }} }}"
+        ),
         "variables": { "q": query, "first": limit, "offset": offset }
     });
     let body = post_json(WEBAMP_GRAPHQL, &gql)?;
-    let nodes = body["data"]["search_skins"]
-        .as_array()
-        .context("Unexpected response from skins.webamp.org")?;
-    Ok(SkinPage {
-        entries: parse_skin_nodes(nodes, &local_skin_names(skins_dir)),
-        next_offset: offset + nodes.len(),
-        total: None,
-        has_more: nodes.len() == limit,
-    })
+    parse_skin_search(&body, offset, limit, &local_skin_names(skins_dir))
 }
 
-/// Download a museum skin into `skins_dir` under a sanitised name.
-pub fn download_skin(md5: &str, filename: &str, skins_dir: &Path) -> Result<PathBuf> {
-    anyhow::ensure!(
-        md5.len() == 32 && md5.chars().all(|c| c.is_ascii_hexdigit()),
-        "Invalid skin id"
-    );
+/// Download the `.wsz` archive of museum skin `md5`.
+pub fn fetch_skin_bytes(md5: &str) -> Result<Vec<u8>> {
+    anyhow::ensure!(is_skin_md5(md5), "Invalid skin id");
     let bytes = get_bytes(&format!("{SKIN_CDN}/{md5}.wsz"), MAX_SKIN_BYTES)?;
     anyhow::ensure!(
         bytes.starts_with(b"PK"),
         "Downloaded file is not a skin archive"
     );
+    Ok(bytes)
+}
+
+/// Download a museum skin into `skins_dir` under a sanitised name.
+pub fn download_skin(md5: &str, filename: &str, skins_dir: &Path) -> Result<PathBuf> {
+    let bytes = fetch_skin_bytes(md5)?;
     let path = skins_dir.join(sanitize_skin_filename(filename, md5));
     crate::config::write_atomic(&path, &bytes)
         .with_context(|| format!("Saving {}", path.display()))?;
@@ -292,11 +359,84 @@ mod tests {
     }
 
     #[test]
+    fn museum_listing_pages_by_server_count_and_hides_nsfw() {
+        let body = json!({"data": {"skins": {
+            "count": 103_909,
+            "nodes": [
+                {"md5": "5e4f10275dcb1fb211d4a8b4f1bda236", "filename": "base-2.91.wsz", "nsfw": false, "average_color": null},
+                {"md5": "ffffffffffffffffffffffffffffffff", "filename": "naughty.wsz", "nsfw": true},
+                {"md5": "cd251187a5e6ff54ce938d26f1f2de02", "filename": "Winamp3_Classified_v5.5.wsz", "nsfw": false}
+            ]
+        }}});
+        let page = parse_skin_list(&body, 100, 3, &["base-2.91.wsz".into()]).unwrap();
+        let names: Vec<&str> = page.entries.iter().map(|e| e.filename.as_str()).collect();
+        assert_eq!(names, ["base-2.91.wsz", "Winamp3_Classified_v5.5.wsz"]);
+        assert!(page.entries[0].is_local && !page.entries[1].is_local);
+        assert_eq!(
+            page.next_offset, 103,
+            "advances by the server page, not the filtered one"
+        );
+        assert_eq!(page.total, Some(103_909));
+        assert!(page.has_more);
+
+        // A page that is entirely NSFW still moves on.
+        let all_nsfw = json!({"data": {"skins": {"count": 10, "nodes": [
+            {"md5": "ffffffffffffffffffffffffffffffff", "filename": "a.wsz", "nsfw": true},
+            {"md5": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "filename": "b.wsz", "nsfw": true}
+        ]}}});
+        let page = parse_skin_list(&all_nsfw, 6, 2, &[]).unwrap();
+        assert!(page.entries.is_empty());
+        assert_eq!((page.next_offset, page.has_more), (8, true));
+
+        let last = json!({"data": {"skins": {"count": 10, "nodes": [
+            {"md5": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "filename": "b.wsz", "nsfw": false}
+        ]}}});
+        let page = parse_skin_list(&last, 9, 2, &[]).unwrap();
+        assert_eq!((page.next_offset, page.has_more), (10, false));
+
+        let empty = json!({"data": {"skins": {"nodes": []}}});
+        assert!(!parse_skin_list(&empty, 0, 2, &[]).unwrap().has_more);
+    }
+
+    #[test]
+    fn classic_search_parses_a_bare_list() {
+        let body = json!({"data": {"search_classic_skins": [
+            {"md5": "1f8214678f97b888dfab7c251c943225", "filename": "zelda_theme_by_shermanfirst.zip", "nsfw": false, "average_color": null},
+            {"md5": "205d326f05b5569b320d5abf6b6b4043", "filename": "ZeldaXtreme.wsz", "nsfw": false, "average_color": "#102030"}
+        ]}});
+        let page = parse_skin_search(&body, 0, 2, &[]).unwrap();
+        assert_eq!(page.entries[0].filename, "zelda_theme_by_shermanfirst.wsz");
+        assert_eq!(page.entries[1].average_color.as_deref(), Some("#102030"));
+        assert_eq!(
+            (page.next_offset, page.total, page.has_more),
+            (2, None, true)
+        );
+        let short = parse_skin_search(&body, 4, 50, &[]).unwrap();
+        assert_eq!((short.next_offset, short.has_more), (6, false));
+    }
+
+    #[test]
+    fn graphql_errors_are_surfaced() {
+        let body = json!({
+            "errors": [{"message": "Combining `sort: MUSEUM` with `filter` is not supported."}],
+            "data": {"skins": null}
+        });
+        let err = parse_skin_list(&body, 0, 2, &[])
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not supported"), "{err}");
+        assert!(parse_skin_search(&json!({}), 0, 2, &[]).is_err());
+    }
+
+    #[test]
     #[ignore = "network"]
     fn fetch_first_page_from_museum() {
         let dir = std::env::temp_dir();
-        let page = fetch_skin_list(0, 5, &dir).unwrap();
-        assert!(!page.entries.is_empty());
-        assert!(page.next_offset > 0);
+        let page = fetch_skin_list(SkinListing::Museum, 0, 5, &dir).unwrap();
+        assert_eq!(page.entries[0].md5, DEFAULT_SKIN_MD5);
+        assert!(page.total.unwrap() > 100_000);
+        let found = search_skins("zelda", 0, 5, &dir).unwrap();
+        assert!(!found.entries.is_empty());
     }
 }

@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use crate::app::SkinEntry;
 use crate::audio::EngineEvent;
 use crate::browse::Entry;
 use crate::install::Deps;
@@ -11,6 +10,7 @@ use crate::net::SkinPage;
 use crate::providers::lyrics::Lyrics;
 use crate::providers::ProviderKind;
 use crate::skin::WinampSkin;
+use crate::skin_browser::SkinEntry;
 
 /// Everything the controller reacts to: terminal input (from the input
 /// thread), playback backends and background tasks.
@@ -53,10 +53,19 @@ pub enum AppEvent {
         page: Result<SkinPage>,
         requested_offset: usize,
     },
-    LocalSkinsListed(Vec<SkinEntry>),
-    SkinDownloaded {
+    LocalSkinsListed {
+        token: u64,
+        entries: Vec<SkinEntry>,
+    },
+    /// A museum skin was installed into the skins directory.
+    SkinInstalled {
         md5: String,
         result: Result<PathBuf>,
+    },
+    /// The skin browser's live preview of the skin `key` was loaded.
+    SkinPreviewLoaded {
+        key: String,
+        result: Result<Box<WinampSkin>>,
     },
     SkinLoaded {
         path: Option<PathBuf>,

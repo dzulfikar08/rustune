@@ -3,6 +3,9 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Dry run: build, sign, notarize and collect every release file without
+  # publishing a release (`gh workflow run release.yml --ref <branch>`).
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -44,6 +47,16 @@ jobs:
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
+
+      # --- Linux / Windows: the bare binary is the release file ---
+      - name: Stage binary (Linux / Windows)
+        if: matrix.os != 'macos-latest'
+        shell: bash
+        run: |
+          src=target/${{ matrix.target }}/release/rustune
+          if [ "$RUNNER_OS" = Windows ]; then src="$src.exe"; fi
+          cp "$src" ${{ matrix.artifact }}
+          chmod +x ${{ matrix.artifact }}
 
       # --- macOS setup ---
       - name: Import Apple certificate
@@ -146,10 +159,13 @@ jobs:
             -ov -format UDZO \
             ${{ matrix.dmg_artifact }}
 
-      - uses: actions/upload-artifact@v4
+      # Every platform's binary exists by now (staged above or codesigned).
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
+          if-no-files-found: error
 
       - name: Upload .dmg (macOS)
         if: matrix.dmg_artifact != ''
@@ -157,18 +173,7 @@ jobs:
         with:
           name: ${{ matrix.dmg_artifact }}
           path: ${{ matrix.dmg_artifact }}
-
-      # --- Linux ---
-      - name: Rename binary (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          cp target/${{ matrix.target }}/release/rustune ${{ matrix.artifact }}
-          chmod +x ${{ matrix.artifact }}
-
-      # --- Windows ---
-      - name: Rename binary (Windows)
-        if: runner.os == 'Windows'
-        run: cp target/${{ matrix.target }}/release/rustune.exe ${{ matrix.artifact }}
+          if-no-files-found: error
 
   notarize:
     name: Notarize macOS (${{ matrix.artifact }})
@@ -206,6 +211,7 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
           overwrite: true
+          if-no-files-found: error
 
       # --- Notarize .dmg ---
       - uses: actions/download-artifact@v4
@@ -232,6 +238,7 @@ jobs:
           name: ${{ matrix.dmg_artifact }}
           path: ${{ matrix.dmg_artifact }}
           overwrite: true
+          if-no-files-found: error
 
   release:
     name: Create Release
@@ -239,15 +246,27 @@ jobs:
     if: always() && needs.build.result == 'success' && needs.notarize.result == 'success'
     runs-on: ubuntu-latest
     steps:
+      # All artifacts land side by side in artifacts/ (one file each).
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+          merge-multiple: true
 
       - name: Ensure binaries are executable
         run: find artifacts -type f ! -name '*.exe' ! -name '*.dmg' ! -name '*.zip' -exec chmod +x {} +
 
+      - name: Check release files
+        run: |
+          ls -l artifacts
+          for f in rustune-aarch64-macos rustune-aarch64-macos.dmg \
+                   rustune-x86_64-macos rustune-x86_64-macos.dmg \
+                   rustune-x86_64-linux rustune-x86_64-windows.exe; do
+            test -s "artifacts/$f" || { echo "::error::missing release file $f"; exit 1; }
+          done
+
       - name: Create release
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*
+          files: artifacts/*
           generate_release_notes: true

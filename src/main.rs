@@ -22,6 +22,8 @@ mod providers;
 mod queue;
 mod report;
 mod skin;
+mod skin_browser;
+mod skin_cache;
 mod state;
 mod tap;
 mod term_input;

@@ -18,7 +18,7 @@ A lightweight terminal music player: a single small binary with no mpv or other 
   - Internet radio ([Radio Browser](https://www.radio-browser.info))
   - Podcasts (iTunes charts and search, subscriptions)
   - Subsonic / Navidrome and Jellyfin / Emby, when configured
-- **Winamp 2.x skins** (`.wsz`) — pixel-accurate rendering with kitty, iTerm2 or sixel graphics, or a half-block fallback; built-in browser for the [Winamp Skin Museum](https://skins.webamp.org/)
+- **Winamp 2.x skins** (`.wsz`) — pixel-accurate rendering with kitty, iTerm2 or sixel graphics, or a half-block fallback; a built-in browser for the whole [Winamp Skin Museum](https://skins.webamp.org/) (100,000+ skins) with a live preview of each skin
 - **Playlists** — load and save `.m3u` / `.pls`
 - **Session restore** — volume, balance, EQ, shuffle/repeat, visualizer, queue and resume position
 - **Themes** — Dark, Light and Winamp (`t` cycles, `:theme light` picks); full mouse support
@@ -28,7 +28,18 @@ A lightweight terminal music player: a single small binary with no mpv or other 
 
 ## Screenshots
 
-> TODO: Add screenshots here
+<table>
+  <tr>
+    <td><img src="assets/screenshots/skin-zelda.webp" width="400" alt="rustune with a Zelda skin: main, equalizer and playlist windows"></td>
+    <td><img src="assets/screenshots/skin-breeder.webp" width="400" alt="rustune with the Breeder skin: main, equalizer and playlist windows"></td>
+  </tr>
+  <tr>
+    <td align="center">Zelda</td>
+    <td align="center">Breeder</td>
+  </tr>
+</table>
+
+Both skins come from the [Winamp Skin Museum](https://skins.webamp.org/) and are drawn from their own bitmaps, right in the terminal.
 
 ## Installation
 
@@ -163,7 +174,7 @@ The tables below are generated from the key table in `src/keymap.rs` (the same t
 | `?` / `Ctrl+K` | Command palette: every action, filterable |
 | `q` / `Ctrl+C` | Quit |
 
-#### Lists (library, provider tabs, playlist window)
+#### Lists (library, provider tabs, playlist window, skin browser)
 
 | Key | Action |
 |-----|--------|
@@ -215,6 +226,17 @@ The tables below are generated from the key table in `src/keymap.rs` (the same t
 | `J` | Lower the slider 3 dB |
 | `0` | Reset the slider to 0 dB |
 | `Esc` | Close the EQ panel |
+
+#### Skin browser (Settings → Theme Winamp → i or o)
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Apply the highlighted skin (Online: install it first) |
+| `/` | Search every classic skin in the museum (Online) |
+| `f` | Switch between the whole museum and curated skins (Online) |
+| `Tab` | Switch between installed and online skins |
+| `r` | Reload the list |
+| `Esc` / `q` | Clear the search, or go back to Settings |
 
 #### Prompt (search, : commands, save, open)
 
@@ -380,7 +402,15 @@ Jellyfin stores the session token in the config after the first login.
 
 ## Winamp Skins
 
-Choose the **Winamp** theme in Settings (`s`). From there, press `i` to pick a local skin (`.wsz` files in the `skins/` folder of the config directory) or `o` to browse and download skins from the [Winamp Skin Museum](https://skins.webamp.org/).
+Choose the **Winamp** theme in Settings (`s`). With the Theme row selected, press `i` for your installed skins (`.wsz` files in the `skins/` folder of the config directory) or `o` to browse the whole [Winamp Skin Museum](https://skins.webamp.org/): more than 100,000 classic skins, in the museum's own order. `Tab` switches between the two lists.
+
+- **Live preview.** Rest the cursor on a skin for a moment and its real main and equalizer windows appear next to the list, drawn by the same compositor as the player and showing a sample track ("rustune - skin preview" at 2:34). Museum skins are downloaded into a preview cache (`rustune/skin-preview` in your user cache directory, capped at 30 MB; the least recently used skins are deleted first).
+- **Install and apply.** `Enter` moves the previewed archive into your `skins/` folder, so it is not downloaded twice, and switches to the skin right away. Installed skins are marked with ✓ in the museum list. On the installed list, `Enter` applies the highlighted skin.
+- **Endless scrolling.** The next page loads as the cursor nears the end, and the header shows the museum's total. NSFW skins are hidden.
+- **Search.** `/` searches every classic skin in the museum (NSFW excluded); `Esc` clears the search.
+- **Curated.** `f` switches between the whole museum and its approved selection.
+
+The preview pane needs a terminal at least 70 columns wide. With kitty, iTerm2 or sixel graphics the preview is pixel-exact at the largest whole-number scale that fits; with the half-block fallback it is scaled down to fit the pane.
 
 The terminal graphics protocol (kitty, iTerm2, sixel, or half-block fallback) is detected automatically; override it with the `graphics` config option.
 
