@@ -165,7 +165,8 @@ pub enum OnboardingAction {
     None,
     Next,
     SetMusicDir(String),
-    SelectTheme(String),
+    /// Theme chosen (already stored in `config.theme`); onboarding is done.
+    SelectTheme,
 }
 
 pub struct App {
@@ -794,7 +795,7 @@ impl App {
                         self.config.theme = self.theme.name.clone();
                         self.config.onboarding_done = true;
                         self.mode = Mode::Browse;
-                        OnboardingAction::SelectTheme(self.theme.name.clone())
+                        OnboardingAction::SelectTheme
                     }
                     _ => OnboardingAction::None,
                 }

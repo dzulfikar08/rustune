@@ -425,7 +425,8 @@ mod tests {
         let mut b = Rng::new(7);
         for _ in 0..100 {
             assert_eq!(a.next_u64(), b.next_u64());
-            assert!(a.below(3) < 3);
+            assert_eq!(a.below(3), b.below(3));
+            assert!(a.below(3) < 3 && b.below(3) < 3);
         }
         let mut v: Vec<u32> = (0..50).collect();
         a.shuffle(&mut v);

@@ -944,7 +944,7 @@ impl Controller {
                     ));
                 }
             }
-            OnboardingAction::SelectTheme(_) => {
+            OnboardingAction::SelectTheme => {
                 if let Err(e) = self.app.config.save() {
                     self.app.error(format!("Cannot save config: {e:#}"));
                 }
