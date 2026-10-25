@@ -1477,6 +1477,7 @@ dependencies = [
  "cpal",
  "crossterm",
  "dirs",
+ "flate2",
  "md-5",
  "quick-xml",
  "ratatui",

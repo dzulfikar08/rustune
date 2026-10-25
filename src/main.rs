@@ -1,5 +1,4 @@
 mod app;
-#[allow(dead_code)]
 mod audio;
 mod cli;
 mod command;
@@ -8,30 +7,24 @@ mod controller;
 mod eq_presets;
 mod event;
 mod extractor;
+mod gfx;
 mod install;
 mod library;
 mod media;
 mod net;
 mod playback;
-mod player;
 mod playlist_io;
-#[allow(dead_code)]
 mod providers;
 mod queue;
-// Owned by the skin/gfx workstream, which carries its own lint fixes.
-#[allow(dead_code, clippy::all)]
 mod skin;
 mod state;
-#[allow(dead_code)] // Lock-free sample tap; consumed once the audio engine lands.
 mod tap;
 mod term_input;
 mod theme;
 mod ui;
-// Renderer/engine contract; some fields are only consumed after integration.
-#[allow(dead_code)]
 mod view;
-#[allow(dead_code)]
 mod vis;
+mod winamp;
 
 use std::process::ExitCode;
 use std::time::Duration;
