@@ -1,4 +1,6 @@
 mod app;
+#[allow(dead_code)]
+mod audio;
 mod cli;
 mod command;
 mod config;
