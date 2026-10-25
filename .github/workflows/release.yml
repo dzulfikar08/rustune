@@ -404,16 +404,24 @@ jobs:
         with:
           name: rustune-packages-${{ matrix.target }}
           path: pkg
+      # Container images skip docs on install (dpkg path-exclude, dnf
+      # nodocs), so the README is checked in the package listing.
       - name: Install the .deb
         if: matrix.kind == 'deb'
         run: |
           dpkg-deb --field pkg/*.deb Package Version Architecture Depends Recommends
+          dpkg-deb --contents pkg/*.deb | tee contents.txt
+          grep -q ' ./usr/bin/rustune$' contents.txt
+          grep -q ' ./usr/share/doc/rustune/README.md$' contents.txt
           apt-get update
           apt-get install -y --no-install-recommends ./pkg/*.deb
       - name: Install the .rpm
         if: matrix.kind == 'rpm'
         run: |
           rpm -qp --requires --recommends pkg/*.rpm
+          rpm -qlp pkg/*.rpm | tee contents.txt
+          grep -qx /usr/bin/rustune contents.txt
+          grep -qx /usr/share/doc/rustune/README.md contents.txt
           dnf install -y ./pkg/*.rpm
       - name: Run rustune
         shell: bash
@@ -423,7 +431,6 @@ jobs:
           echo "$out"
           test "$out" = "rustune $VERSION"
           rustune --help > help.txt && grep -q USAGE help.txt
-          test -s /usr/share/doc/rustune/README.md
       - name: Uninstall
         shell: bash
         run: |
