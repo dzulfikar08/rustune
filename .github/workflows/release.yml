@@ -51,11 +51,14 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact: rustune-x86_64-windows.exe
             dmg_artifact: ""
-          - os: ubuntu-latest
+          # Linux builds link against Ubuntu 22.04's glibc 2.35 so they run
+          # on Debian 12 and other older distributions (24.04 pulls in a
+          # GLIBC_2.39 reference that older aarch64 loaders reject).
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             artifact: rustune-x86_64-linux
             dmg_artifact: ""
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             artifact: rustune-aarch64-linux
             dmg_artifact: ""
@@ -419,7 +422,7 @@ jobs:
           out=$(rustune --version)
           echo "$out"
           test "$out" = "rustune $VERSION"
-          rustune --help | grep -q USAGE
+          rustune --help > help.txt && grep -q USAGE help.txt
           test -s /usr/share/doc/rustune/README.md
       - name: Uninstall
         shell: bash

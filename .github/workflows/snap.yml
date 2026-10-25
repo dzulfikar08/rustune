@@ -46,7 +46,7 @@ jobs:
           out=$(rustune --version)
           echo "$out"
           test "$out" = "rustune $version"
-          rustune --help | grep -q USAGE
+          rustune --help > help.txt && grep -q USAGE help.txt
 
       - name: Play a tone through PulseAudio
         run: |

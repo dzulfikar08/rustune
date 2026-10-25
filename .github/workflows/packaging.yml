@@ -107,7 +107,7 @@ jobs:
           out=$(nix run --no-update-lock-file . -- --version)
           echo "$out"
           test "$out" = "rustune $(nix eval --raw .#default.version)"
-          nix run --no-update-lock-file . -- --help | grep -q USAGE
+          nix run --no-update-lock-file . -- --help > help.txt && grep -q USAGE help.txt
           nix flake check --no-update-lock-file --no-build
 
   aur:
@@ -141,7 +141,7 @@ jobs:
           out=$(rustune --version)
           echo "$out"
           test "$out" = "rustune $version"
-          rustune --help | grep -q USAGE
+          rustune --help > help.txt && grep -q USAGE help.txt
           pacman -Qi ${{ matrix.pkg }}
 
   winget:
