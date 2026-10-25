@@ -93,6 +93,9 @@ pub struct Controller {
     lyrics_cache: HashMap<String, Option<Lyrics>>,
     lyrics_key: Option<String>,
     search_token: u64,
+    /// In-flight extractor resolution (yt-dlp). Aborting drops the future,
+    /// and `kill_on_drop` kills the child process.
+    resolving: Option<tokio::task::AbortHandle>,
     skin_fetch_token: u64,
     save_at: Option<Instant>,
     saving: bool,
@@ -278,6 +281,7 @@ impl Controller {
             lyrics_key: None,
             search_token: 0,
             skin_fetch_token: 0,
+            resolving: None,
             save_at: None,
             saving: false,
             winamp_ui: WinampUiState::new(),
@@ -687,6 +691,7 @@ impl Controller {
     /// Start the queue's current item.
     fn play_current(&mut self) {
         self.finish_report();
+        self.cancel_resolve();
         let Some(item) = self.app.queue.current().cloned() else {
             return;
         };
@@ -723,10 +728,18 @@ impl Controller {
         let token = self.play_token;
         let tx = self.tx.clone();
         let (id, title) = (item.id.clone(), item.title.clone());
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let result = ext.resolve(&id, &title).await;
             let _ = tx.send(AppEvent::StreamReady { token, result });
         });
+        self.resolving = Some(task.abort_handle());
+    }
+
+    /// Kill a yt-dlp lookup for a track the user already left.
+    fn cancel_resolve(&mut self) {
+        if let Some(task) = self.resolving.take() {
+            task.abort();
+        }
     }
 
     fn start_engine(&mut self, src: Source) {
@@ -896,6 +909,7 @@ impl Controller {
 
     fn stop(&mut self) {
         self.finish_report();
+        self.cancel_resolve();
         self.playback.stop();
         self.app.playback = None;
         self.started = false;
