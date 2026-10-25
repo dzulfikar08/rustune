@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, OnboardingStep};
+use crate::install::DepStatus;
 use crate::theme::Theme;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
@@ -81,27 +82,16 @@ fn render_welcome(frame: &mut Frame, area: Rect, theme: &Theme) {
 }
 
 fn render_dependencies(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    // Check mpv status
-    let mpv_status = match std::process::Command::new("mpv").arg("--version").output() {
-        Ok(o) if o.status.success() => {
-            let v = String::from_utf8_lossy(&o.stdout);
-            let version = v.lines().next().unwrap_or("mpv");
-            (true, version.to_string())
+    // Probed once in the background at startup (and after installs).
+    let status = |s: &DepStatus| -> (bool, String) {
+        match s {
+            DepStatus::Found(version) => (true, version.clone()),
+            DepStatus::Checking => (false, "checking…".into()),
+            DepStatus::Missing => (false, "Not found".into()),
         }
-        _ => (false, "Not found".into()),
     };
-
-    // Check yt-dlp status
-    let ytdlp_status = match std::process::Command::new("yt-dlp")
-        .arg("--version")
-        .output()
-    {
-        Ok(o) if o.status.success() => {
-            let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            (true, v)
-        }
-        _ => (false, "Not found".into()),
-    };
+    let mpv_status = status(&app.deps.mpv);
+    let ytdlp_status = status(&app.deps.ytdlp);
 
     let dep_line = |found: bool, name: &str, version: &str, selected: bool| -> Line<'static> {
         let (mark, mark_style) = if found {
@@ -144,7 +134,12 @@ fn render_dependencies(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) 
                 .fg(ratatui::style::Color::Cyan),
         )),
         Line::from(""),
-        dep_line(mpv_status.0, "mpv (required)", &mpv_status.1, sel == 0),
+        dep_line(
+            mpv_status.0,
+            "mpv (optional, for streams)",
+            &mpv_status.1,
+            sel == 0,
+        ),
         dep_line(
             ytdlp_status.0,
             "yt-dlp (optional, for online search)",

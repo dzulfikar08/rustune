@@ -1,39 +1,75 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::path::Path;
+use std::process::Stdio;
 use std::time::Duration;
 
-use crate::extractor::{Extractor, ExtractorStatus};
+use super::{BoxFuture, Extractor};
 use crate::media::{MediaItem, SourceKind, StreamInfo};
-
-const SEARCH_TIMEOUT_SECS: u64 = 60;
 
 #[derive(Debug, Clone, Deserialize)]
 struct YtdlpResult {
-    pub id: String,
-    pub title: String,
+    id: String,
+    title: String,
     #[serde(default, deserialize_with = "deserialize_duration")]
-    pub duration: Option<u64>,
+    duration: Option<u64>,
     #[serde(default)]
-    pub channel: Option<String>,
+    channel: Option<String>,
 }
 
 fn deserialize_duration<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<u64>, D::Error> {
     let val: Option<serde_json::Value> = Option::deserialize(deserializer)?;
-    match val {
-        None => Ok(None),
-        Some(serde_json::Value::Number(n)) => Ok(n.as_u64()),
-        Some(serde_json::Value::String(s)) => Ok(s.parse::<u64>().ok()),
-        _ => Ok(None),
-    }
+    Ok(match val {
+        Some(serde_json::Value::Number(n)) => n.as_f64().filter(|d| *d >= 0.0).map(|d| d as u64),
+        Some(serde_json::Value::String(s)) => s.parse::<u64>().ok(),
+        _ => None,
+    })
 }
 
-pub struct YtdlpExtractor;
+/// Parse `--dump-json` output (one JSON object per line); unparseable lines
+/// (warnings, partial output) are skipped.
+fn parse_search_output(stdout: &str) -> Vec<MediaItem> {
+    stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<YtdlpResult>(l).ok())
+        .map(|r| MediaItem {
+            id: r.id,
+            title: r.title,
+            artist: None,
+            album: None,
+            duration: r.duration,
+            subtitle: r.channel,
+            source: SourceKind::Extractor("ytdlp".into()),
+        })
+        .collect()
+}
+
+fn command() -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new("yt-dlp");
+    cmd.stdin(Stdio::null()).kill_on_drop(true);
+    cmd
+}
+
+fn stderr_tail(stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    text.lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("unknown error")
+        .trim()
+        .to_string()
+}
+
+pub struct YtdlpExtractor {
+    timeout: Duration,
+}
 
 impl YtdlpExtractor {
-    pub fn new() -> Self {
-        Self
+    pub fn new(timeout: Duration) -> Self {
+        Self { timeout }
     }
 }
 
@@ -42,120 +78,130 @@ impl Extractor for YtdlpExtractor {
         "ytdlp"
     }
 
-    fn status(&self) -> ExtractorStatus {
-        match std::process::Command::new("yt-dlp")
-            .arg("--version")
-            .output()
-        {
-            Ok(output) if output.status.success() => {
-                let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                ExtractorStatus::Available(version)
-            }
-            Ok(_) => ExtractorStatus::Broken("yt-dlp check failed".into()),
-            Err(_) => ExtractorStatus::NotFound,
-        }
-    }
-
-    fn resolve(
-        &self,
-        id: &str,
-        title: &str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<StreamInfo>> + Send + '_>> {
-        let id = id.to_string();
-        let title = title.to_string();
+    fn resolve<'a>(&'a self, id: &'a str, title: &'a str) -> BoxFuture<'a, Result<StreamInfo>> {
         Box::pin(async move {
             let url = format!("https://www.youtube.com/watch?v={id}");
             let output = tokio::time::timeout(
-                Duration::from_secs(SEARCH_TIMEOUT_SECS),
-                tokio::process::Command::new("yt-dlp")
-                    .arg("-f")
-                    .arg("bestaudio/best")
-                    .arg("--get-url")
+                self.timeout,
+                command()
+                    .args(["-f", "bestaudio/best", "--get-url", "--"])
                     .arg(&url)
                     .output(),
             )
             .await
-            .context("Stream extraction timed out.")?
-            .context("Failed to run yt-dlp for stream extraction")?;
+            .context("Stream extraction timed out")?
+            .context("Failed to run yt-dlp (is it installed?)")?;
 
             if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                anyhow::bail!("Stream extraction failed: {}", stderr.trim());
+                anyhow::bail!("Stream extraction failed: {}", stderr_tail(&output.stderr));
             }
-
-            let stream_url = String::from_utf8_lossy(&output.stdout);
-            let stream_url = stream_url.trim().to_string();
-
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stream_url = stdout.lines().next().unwrap_or("").trim();
             if stream_url.is_empty() {
                 anyhow::bail!("No stream URL returned");
             }
-
             Ok(StreamInfo {
-                url: stream_url,
-                title,
+                url: stream_url.to_string(),
+                title: title.to_string(),
             })
         })
     }
 
-    fn search(
-        &self,
-        query: &str,
+    fn search<'a>(
+        &'a self,
+        query: &'a str,
         offset: usize,
         limit: usize,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<MediaItem>>> + Send + '_>>
-    {
-        let query = query.to_string();
+    ) -> BoxFuture<'a, Result<Vec<MediaItem>>> {
         Box::pin(async move {
-            let count = offset + limit;
-            let search_term = format!("ytsearch{count}:{query}");
-
+            // Ask for offset+limit hits but only dump the requested window.
+            let search_term = format!("ytsearch{}:{query}", offset + limit);
+            let window = format!("{}:{}", offset + 1, offset + limit);
             let output = tokio::time::timeout(
-                Duration::from_secs(SEARCH_TIMEOUT_SECS),
-                tokio::process::Command::new("yt-dlp")
+                self.timeout,
+                command()
+                    .args(["--dump-json", "--no-download", "--flat-playlist"])
+                    .args(["--playlist-items", window.as_str(), "--"])
                     .arg(&search_term)
-                    .arg("--dump-json")
-                    .arg("--no-download")
-                    .arg("--flat-playlist")
                     .output(),
             )
             .await
-            .context("Search timed out.")?
-            .context("Failed to run yt-dlp. Is it installed?")?;
+            .context("Search timed out")?
+            .context("Failed to run yt-dlp (is it installed?)")?;
 
             if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                anyhow::bail!("yt-dlp search failed: {}", stderr.trim());
+                anyhow::bail!("yt-dlp search failed: {}", stderr_tail(&output.stderr));
             }
-
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let mut results = Vec::new();
-
-            for line in stdout.lines() {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                match serde_json::from_str::<YtdlpResult>(line) {
-                    Ok(r) => results.push(MediaItem {
-                        id: r.id,
-                        title: r.title,
-                        artist: None,
-                        album: None,
-                        duration: r.duration,
-                        subtitle: r.channel,
-                        source: SourceKind::Extractor("ytdlp".into()),
-                    }),
-                    Err(e) => eprintln!("Warning: skipping unparseable result: {e}"),
-                }
-            }
-
-            // For offset > 0, return only the slice for this page
-            if offset > 0 && results.len() > offset {
-                Ok(results.into_iter().skip(offset).take(limit).collect())
-            } else if offset > 0 {
-                Ok(Vec::new())
-            } else {
-                Ok(results)
-            }
+            Ok(parse_search_output(&String::from_utf8_lossy(
+                &output.stdout,
+            )))
         })
+    }
+}
+
+/// Download a video's audio into `music_dir` (needs yt-dlp; ffmpeg for `-x`).
+pub async fn download_audio(id: &str, title: &str, music_dir: &Path) -> Result<()> {
+    let safe_title: String = title
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect();
+    let safe_title = safe_title.trim().trim_start_matches('.');
+    let safe_title = if safe_title.is_empty() {
+        id
+    } else {
+        safe_title
+    };
+    let output_template = music_dir.join(format!("{safe_title}.%(ext)s"));
+    let url = format!("https://www.youtube.com/watch?v={id}");
+
+    let output = tokio::time::timeout(
+        Duration::from_secs(300),
+        command()
+            .args(["-x", "--audio-format", "best", "--embed-thumbnail", "-o"])
+            .arg(&output_template)
+            .arg("--")
+            .arg(&url)
+            .output(),
+    )
+    .await
+    .context("Download timed out")?
+    .context("Failed to run yt-dlp (is it installed?)")?;
+
+    if !output.status.success() {
+        anyhow::bail!("{}", stderr_tail(&output.stderr));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_output_parsing_skips_noise() {
+        let out = r#"{"id":"a1","title":"First","duration":61.4,"channel":"Chan"}
+WARNING: something
+{"id":"b2","title":"Second","duration":"30"}
+
+{"id":"c3","title":"Third","duration":null}"#;
+        let items = parse_search_output(out);
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].duration, Some(61));
+        assert_eq!(items[0].subtitle.as_deref(), Some("Chan"));
+        assert_eq!(items[1].duration, Some(30));
+        assert_eq!(items[2].duration, None);
+        assert!(items
+            .iter()
+            .all(|i| i.source == SourceKind::Extractor("ytdlp".into())));
+    }
+
+    #[test]
+    fn stderr_tail_takes_last_line() {
+        assert_eq!(stderr_tail(b"WARNING: x\nERROR: boom\n\n"), "ERROR: boom");
+        assert_eq!(stderr_tail(b""), "unknown error");
     }
 }

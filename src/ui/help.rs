@@ -4,81 +4,68 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::Mode;
+use crate::app::{App, InputPurpose, Mode};
 use crate::media::SourceKind;
-use crate::theme::Theme;
 
-pub fn render(
-    frame: &mut Frame,
-    area: ratatui::layout::Rect,
-    mode: &Mode,
-    source: &SourceKind,
-    theme: &Theme,
-) {
-    let hints = match mode {
+/// Key hints for the current mode, as (key, description) pairs.
+fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    match app.mode {
+        Mode::Browse if app.show_playlist => vec![
+            ("j/k", "move"),
+            ("Enter", "play"),
+            ("J/K", "reorder"),
+            ("D", "remove"),
+            ("z x c v b", "transport"),
+            ("w", "save"),
+            ("P", "library"),
+            ("q", "quit"),
+        ],
         Mode::Browse => {
             let mut v = vec![
-                Span::styled(" /", theme.help_key),
-                Span::styled(" search ", theme.help_desc),
-                Span::styled("j/k", theme.help_key),
-                Span::styled(" nav ", theme.help_desc),
-                Span::styled("Enter", theme.help_key),
-                Span::styled(" play ", theme.help_desc),
+                ("/", "search"),
+                ("Enter", "play"),
+                ("a/A", "queue/next"),
+                ("z x c v b", "prev play pause stop next"),
+                ("←/→", "seek"),
+                ("+/-", "vol"),
+                ("S/R", "shuffle/repeat"),
+                ("P", "playlist"),
             ];
-            if matches!(source, SourceKind::Extractor(_)) {
-                v.push(Span::styled("d", theme.help_key));
-                v.push(Span::styled(" download ", theme.help_desc));
+            if matches!(app.active_source, SourceKind::Extractor(_)) {
+                v.push(("n/p", "page"));
+                v.push(("d", "download"));
             }
-            v.extend_from_slice(&[
-                Span::styled("Space", theme.help_key),
-                Span::styled(" pause ", theme.help_desc),
-                Span::styled("Tab", theme.help_key),
-                Span::styled(" source ", theme.help_desc),
-                Span::styled("S", theme.help_key),
-                Span::styled(" settings ", theme.help_desc),
-                Span::styled("q", theme.help_key),
-                Span::styled(" quit", theme.help_desc),
-            ]);
+            v.extend([("Tab", "source"), ("s", "settings"), ("q", "quit")]);
             v
         }
-        Mode::Input => vec![
-            Span::styled(" Enter", theme.help_key),
-            Span::styled(" submit ", theme.help_desc),
-            Span::styled("Esc", theme.help_key),
-            Span::styled(" cancel ", theme.help_desc),
-            Span::styled("\u{2191}\u{2193}", theme.help_key),
-            Span::styled(" history ", theme.help_desc),
-            Span::styled("Ctrl+A/E", theme.help_key),
-            Span::styled(" home/end ", theme.help_desc),
-            Span::styled("Ctrl+U", theme.help_key),
-            Span::styled(" clear", theme.help_desc),
-        ],
-        Mode::Settings => vec![
-            Span::styled(" j/k", theme.help_key),
-            Span::styled(" navigate ", theme.help_desc),
-            Span::styled("Enter", theme.help_key),
-            Span::styled(" change ", theme.help_desc),
-            Span::styled("Esc", theme.help_key),
-            Span::styled(" back", theme.help_desc),
-        ],
-        Mode::Onboarding => vec![
-            Span::styled(" Enter", theme.help_key),
-            Span::styled(" next ", theme.help_desc),
-            Span::styled("Esc", theme.help_key),
-            Span::styled(" skip ", theme.help_desc),
-        ],
+        Mode::Input => match app.input_purpose {
+            InputPurpose::Search => vec![
+                ("Enter", "submit"),
+                ("Esc", "cancel"),
+                ("↑↓", "history"),
+                (":", "command (:q :clear :eq :vol :seek …)"),
+            ],
+            InputPurpose::SavePlaylist => vec![("Enter", "save playlist"), ("Esc", "cancel")],
+            InputPurpose::Open => vec![("Enter", "play file/dir/URL/playlist"), ("Esc", "cancel")],
+        },
+        Mode::Settings => vec![("j/k", "navigate"), ("Enter", "change"), ("Esc", "back")],
+        Mode::Onboarding => vec![("Enter", "next"), ("Esc", "skip")],
         Mode::SkinBrowser => vec![
-            Span::styled(" j/k", theme.help_key),
-            Span::styled(" nav ", theme.help_desc),
-            Span::styled("Enter", theme.help_key),
-            Span::styled(" select ", theme.help_desc),
-            Span::styled("n", theme.help_key),
-            Span::styled(" next ", theme.help_desc),
-            Span::styled("Esc", theme.help_key),
-            Span::styled(" back", theme.help_desc),
+            ("j/k", "nav"),
+            ("Enter", "select"),
+            ("n", "more"),
+            ("/", "search"),
+            ("Esc", "back"),
         ],
-    };
+    }
+}
 
-    let paragraph = Paragraph::new(Line::from(hints));
-    frame.render_widget(paragraph, area);
+pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
+    let theme = &app.theme;
+    let mut spans = Vec::new();
+    for (key, desc) in hints(app) {
+        spans.push(Span::styled(format!(" {key}"), theme.help_key));
+        spans.push(Span::styled(format!(" {desc}"), theme.help_desc));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
