@@ -1353,7 +1353,10 @@ impl Controller {
                     Err(e) => answer(reply, error_line(&e)),
                 }
             }
-            Query::Search(search) => self.start_search(search, reply),
+            Query::Search(search) => {
+                self.start_search(search, reply);
+                return true;
+            }
             Query::Skin(spec) => self.apply_skin(spec, reply),
         }
         false
@@ -1539,6 +1542,8 @@ impl Controller {
                 }
             },
         }
+        // The client's next `status` must already see the queue change.
+        self.notify_observers();
         answer(reply, reply_line(&out));
     }
 
