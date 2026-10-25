@@ -17,7 +17,6 @@
 ///   PLAYPAUS.BMP  — play/pause indicator (42x9)
 ///   MONOSTER.BMP  — mono/stereo indicator (58x24)
 ///   VOLUME.BMP    — volume slider (68x433)
-
 use std::collections::HashMap;
 use std::io::Read;
 
@@ -78,19 +77,19 @@ pub struct WinampSkin {
     pub volume_bitmap: Option<BmpImage>,
 
     // Colors extracted from MAIN.BMP palette (indices are well-known)
-    pub chrome_dark: Color,       // palette[5] — darkest chrome
-    pub chrome_mid: Color,        // palette[3] — mid chrome
-    pub chrome_light: Color,      // palette[2] — light chrome border
-    pub body_bg: Color,           // palette[4] — main body background
-    pub titlebar_bg: Color,       // palette[6] — title bar accent
+    pub chrome_dark: Color,  // palette[5] — darkest chrome
+    pub chrome_mid: Color,   // palette[3] — mid chrome
+    pub chrome_light: Color, // palette[2] — light chrome border
+    pub body_bg: Color,      // palette[4] — main body background
+    pub titlebar_bg: Color,  // palette[6] — title bar accent
 
     // LED display (from NUMBERS.BMP palette)
-    pub led_on: Color,            // palette[1] — bright LED
-    pub led_off: Color,           // palette[0] — dim LED background
+    pub led_on: Color,  // palette[1] — bright LED
+    pub led_off: Color, // palette[0] — dim LED background
 
     // Text colors (from TEXT.BMP palette)
-    pub text_fg: Color,           // palette[1] — text foreground
-    pub text_bg: Color,           // palette[0] — text background
+    pub text_fg: Color, // palette[1] — text foreground
+    pub text_bg: Color, // palette[0] — text background
 
     // Playlist colors (from PLEDIT.TXT)
     pub plist_normal: Color,      // Normal text
@@ -102,14 +101,14 @@ pub struct WinampSkin {
     pub vis_colors: Vec<Color>,
 
     // Transport button colors (from CBUTTONS.BMP palette)
-    pub btn_normal: Color,        // button face normal
-    pub btn_pressed: Color,       // button face pressed
-    pub btn_text: Color,          // button icon color
+    pub btn_normal: Color,  // button face normal
+    pub btn_pressed: Color, // button face pressed
+    pub btn_text: Color,    // button icon color
 
     // Seek bar (from POSBAR.BMP palette)
-    pub seek_track: Color,        // seek bar track
-    pub seek_thumb: Color,        // seek bar thumb
-    pub seek_filled: Color,       // filled portion
+    pub seek_track: Color,  // seek bar track
+    pub seek_thumb: Color,  // seek bar thumb
+    pub seek_filled: Color, // filled portion
 
     // Play/pause indicator (from PLAYPAUS.BMP)
     pub play_indicator: Color,
@@ -150,8 +149,14 @@ impl WinampSkin {
         // Parse MAIN.BMP palette
         let main_pal = parse_bmp_palette(files.get("MAIN.BMP"));
         let chrome_dark = main_pal.get(5).copied().unwrap_or(Color::Rgb(8, 8, 16));
-        let chrome_mid = main_pal.get(3).copied().unwrap_or(Color::Rgb(123, 140, 156));
-        let chrome_light = main_pal.get(2).copied().unwrap_or(Color::Rgb(189, 206, 214));
+        let chrome_mid = main_pal
+            .get(3)
+            .copied()
+            .unwrap_or(Color::Rgb(123, 140, 156));
+        let chrome_light = main_pal
+            .get(2)
+            .copied()
+            .unwrap_or(Color::Rgb(189, 206, 214));
         let body_bg = main_pal.get(4).copied().unwrap_or(Color::Rgb(57, 57, 90));
         let titlebar_bg = main_pal.get(6).copied().unwrap_or(Color::Rgb(0, 198, 255));
         let main_bitmap = parse_bmp_8bit(files.get("MAIN.BMP"));
@@ -248,7 +253,9 @@ impl WinampSkin {
     }
 
     /// Read metadata (name/author/description) from a .wsz without parsing BMP palettes.
-    pub fn peek_metadata(path: &std::path::Path) -> anyhow::Result<(String, Option<String>, Option<String>)> {
+    pub fn peek_metadata(
+        path: &std::path::Path,
+    ) -> anyhow::Result<(String, Option<String>, Option<String>)> {
         let file = std::fs::File::open(path)?;
         let mut archive = zip::ZipArchive::new(file)?;
 
@@ -424,9 +431,16 @@ fn parse_iniish_metadata(s: &str) -> (Option<String>, Option<String>, Option<Str
         if line.starts_with('[') && line.ends_with(']') {
             continue; // section header
         }
-        let Some((k, v)) = line.split_once('=') else { continue };
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
         let key = k.trim().to_lowercase();
-        let mut val = v.trim().trim_matches('"').trim_matches('\'').trim().to_string();
+        let mut val = v
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim()
+            .to_string();
         if val.is_empty() {
             continue;
         }
@@ -457,10 +471,7 @@ fn parse_iniish_metadata(s: &str) -> (Option<String>, Option<String>, Option<Str
         if let Some(first) = s.lines().map(str::trim).find(|l| !l.is_empty()) {
             // Avoid treating obvious "readme" boilerplate as name.
             let lower = first.to_lowercase();
-            if !lower.starts_with("readme")
-                && !lower.starts_with("skin")
-                && first.len() <= 80
-            {
+            if !lower.starts_with("readme") && !lower.starts_with("skin") && first.len() <= 80 {
                 name = Some(first.to_string());
             }
         }
@@ -487,12 +498,11 @@ fn parse_xmlish_metadata(s: &str) -> (Option<String>, Option<String>, Option<Str
     // (good enough for typical ASCII metadata)
     if name.is_some() || author.is_some() || desc.is_some() {
         if name.is_some() {
-            name = between(s, "<name>", "</name>")
-                .or_else(|| between(s, "<Name>", "</Name>"));
+            name = between(s, "<name>", "</name>").or_else(|| between(s, "<Name>", "</Name>"));
         }
         if author.is_some() {
-            author = between(s, "<author>", "</author>")
-                .or_else(|| between(s, "<Author>", "</Author>"));
+            author =
+                between(s, "<author>", "</author>").or_else(|| between(s, "<Author>", "</Author>"));
         }
         if desc.is_some() {
             desc = between(s, "<description>", "</description>")
@@ -555,16 +565,20 @@ fn parse_bmp_8bit(data: Option<&Vec<u8>>) -> Option<BmpImage> {
         let mut raw_rgb = vec![0u8; (w as usize * 3).saturating_mul(h as usize)];
         let pix = &data[pixel_offset..pixel_offset + needed];
         for y in 0..h as usize {
-            let src_y = if top_down { y } else { (h as usize - 1).saturating_sub(y) };
+            let src_y = if top_down {
+                y
+            } else {
+                (h as usize - 1).saturating_sub(y)
+            };
             let src_off = src_y * row_bytes;
             let dst_off = y * w as usize * 3;
             for x in 0..w as usize {
                 let si = src_off + x * bytes_per_pixel;
                 let di = dst_off + x * 3;
-                raw_rgb[di] = pix[si];         // B
+                raw_rgb[di] = pix[si]; // B
                 raw_rgb[di + 1] = pix[si + 1]; // G
                 raw_rgb[di + 2] = pix[si + 2]; // R
-                // pix[si + 3] for 32bpp is alpha — ignored
+                                               // pix[si + 3] for 32bpp is alpha — ignored
             }
         }
 
@@ -611,7 +625,11 @@ fn parse_bmp_8bit(data: Option<&Vec<u8>>) -> Option<BmpImage> {
         }
         let pix = &data[pixel_offset..pixel_offset + needed];
         for y in 0..h as usize {
-            let src_y = if top_down { y } else { (h as usize - 1).saturating_sub(y) };
+            let src_y = if top_down {
+                y
+            } else {
+                (h as usize - 1).saturating_sub(y)
+            };
             let src_row = &pix[src_y * row_bytes..src_y * row_bytes + w as usize];
             let dst_row = &mut pixels[y * w as usize..y * w as usize + w as usize];
             dst_row.copy_from_slice(src_row);
@@ -841,14 +859,25 @@ mod tests {
         let entries = std::fs::read_dir(&skin_dir).expect("read dir");
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("wsz")) != Some(true) {
+            if path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("wsz"))
+                != Some(true)
+            {
                 continue;
             }
-            let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             match WinampSkin::from_wsz(&path) {
                 Ok(skin) => {
                     let has_main = skin.main_bitmap.is_some();
-                    let bmp_info = skin.main_bitmap.as_ref()
+                    let bmp_info = skin
+                        .main_bitmap
+                        .as_ref()
                         .map(|b| format!("{}x{}", b.width, b.height))
                         .unwrap_or_else(|| "None".into());
                     eprintln!("OK {}: main_bitmap={} {}", name, has_main, bmp_info);
@@ -899,13 +928,22 @@ mod tests {
         let w = i32::from_le_bytes([main_data[18], main_data[19], main_data[20], main_data[21]]);
         let h = i32::from_le_bytes([main_data[22], main_data[23], main_data[24], main_data[25]]);
         let planes = u16::from_le_bytes([main_data[26], main_data[27]]);
-        eprintln!("MAIN.BMP: {}x{} planes={} bpp={} comp={}", w, h, planes, bpp, comp);
+        eprintln!(
+            "MAIN.BMP: {}x{} planes={} bpp={} comp={}",
+            w, h, planes, bpp, comp
+        );
 
         // Try parsing
         let result = parse_bmp_8bit(files.get("MAIN.BMP"));
         match &result {
             Some(bmp) => {
-                eprintln!("SUCCESS: {}x{} palette={} pixels={}", bmp.width, bmp.height, bmp.palette.len(), bmp.pixels.len());
+                eprintln!(
+                    "SUCCESS: {}x{} palette={} pixels={}",
+                    bmp.width,
+                    bmp.height,
+                    bmp.palette.len(),
+                    bmp.pixels.len()
+                );
             }
             None => {
                 eprintln!("FAILED: parse_bmp_8bit returned None");
@@ -914,12 +952,29 @@ mod tests {
         assert!(result.is_some(), "MAIN.BMP should parse successfully");
 
         // Also check all other BMPs
-        for name in &["NUMBERS.BMP", "CBUTTONS.BMP", "POSBAR.BMP", "TEXT.BMP", "PLAYPAUS.BMP", "TITLEBAR.BMP", "VOLUME.BMP", "MONOSTER.BMP", "SHUFREP.BMP"] {
+        for name in &[
+            "NUMBERS.BMP",
+            "CBUTTONS.BMP",
+            "POSBAR.BMP",
+            "TEXT.BMP",
+            "PLAYPAUS.BMP",
+            "TITLEBAR.BMP",
+            "VOLUME.BMP",
+            "MONOSTER.BMP",
+            "SHUFREP.BMP",
+        ] {
             if let Some(data) = files.get(*name) {
                 let bpp = u16::from_le_bytes([data[28], data[29]]);
                 let comp = u32::from_le_bytes([data[30], data[31], data[32], data[33]]);
                 let result = parse_bmp_8bit(Some(data));
-                eprintln!("{}: len={} bpp={} comp={} => {}", name, data.len(), bpp, comp, result.is_some());
+                eprintln!(
+                    "{}: len={} bpp={} comp={} => {}",
+                    name,
+                    data.len(),
+                    bpp,
+                    comp,
+                    result.is_some()
+                );
             }
         }
     }

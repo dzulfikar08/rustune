@@ -108,15 +108,24 @@ impl SC {
             plist_normal_bg: Color::Black,
             plist_selected_bg: Color::Rgb(0, 0, 198),
             vis_colors: vec![
-                Color::Rgb(0, 0, 0),       Color::Rgb(24, 33, 41),
-                Color::Rgb(239, 49, 16),    Color::Rgb(206, 41, 16),
-                Color::Rgb(214, 90, 0),     Color::Rgb(214, 102, 0),
-                Color::Rgb(214, 115, 0),    Color::Rgb(198, 123, 8),
-                Color::Rgb(222, 165, 24),   Color::Rgb(214, 181, 33),
-                Color::Rgb(189, 222, 41),   Color::Rgb(148, 222, 33),
-                Color::Rgb(41, 206, 16),    Color::Rgb(50, 190, 16),
-                Color::Rgb(57, 181, 16),    Color::Rgb(49, 156, 8),
-                Color::Rgb(41, 148, 0),     Color::Rgb(24, 132, 8),
+                Color::Rgb(0, 0, 0),
+                Color::Rgb(24, 33, 41),
+                Color::Rgb(239, 49, 16),
+                Color::Rgb(206, 41, 16),
+                Color::Rgb(214, 90, 0),
+                Color::Rgb(214, 102, 0),
+                Color::Rgb(214, 115, 0),
+                Color::Rgb(198, 123, 8),
+                Color::Rgb(222, 165, 24),
+                Color::Rgb(214, 181, 33),
+                Color::Rgb(189, 222, 41),
+                Color::Rgb(148, 222, 33),
+                Color::Rgb(41, 206, 16),
+                Color::Rgb(50, 190, 16),
+                Color::Rgb(57, 181, 16),
+                Color::Rgb(49, 156, 8),
+                Color::Rgb(41, 148, 0),
+                Color::Rgb(24, 132, 8),
             ],
             btn_normal: Color::Rgb(34, 33, 51),
             btn_text: Color::White,
@@ -233,8 +242,8 @@ fn render_count_and_vis(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let vis_width = (area.width as usize).saturating_sub(14);
     let bar_count = vis_width / 2;
     let bar_chars = [
-        '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}',
-        '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}',
+        '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
+        '\u{2588}',
     ];
 
     let mut vis_spans: Vec<Span> = Vec::with_capacity(bar_count + 1);
@@ -285,10 +294,7 @@ fn render_search_marquee(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
 
     let line = Line::from(vec![
         Span::styled(" ", Style::default().bg(sc.text_bg)),
-        Span::styled(
-            display,
-            Style::default().fg(sc.text_fg).bg(sc.text_bg),
-        ),
+        Span::styled(display, Style::default().fg(sc.text_fg).bg(sc.text_bg)),
         Span::styled(
             " ".repeat(w.saturating_sub(1)),
             Style::default().bg(sc.text_bg),
@@ -328,17 +334,17 @@ fn render_action_buttons(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let search_style = if search_active { btn_active } else { btn_style };
 
     let line = Line::from(vec![
-        Span::styled("  / ", search_style),           // search
+        Span::styled("  / ", search_style), // search
         sep.clone(),
-        Span::styled(" j/k ", btn_style),             // navigate
+        Span::styled(" j/k ", btn_style), // navigate
         sep.clone(),
-        Span::styled(" Enter ", btn_active),           // apply/download
+        Span::styled(" Enter ", btn_active), // apply/download
         sep.clone(),
-        Span::styled(" n ", btn_style),                // load more
+        Span::styled(" n ", btn_style), // load more
         sep.clone(),
-        Span::styled(" Tab ", btn_style),              // switch local/online
+        Span::styled(" Tab ", btn_style), // switch local/online
         sep.clone(),
-        Span::styled(" Esc ", btn_style),              // back
+        Span::styled(" Esc ", btn_style), // back
     ]);
     frame.render_widget(
         Paragraph::new(line).style(Style::default().bg(sc.body_bg)),
@@ -372,7 +378,9 @@ fn render_status_row(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
         };
         Span::styled(
             format!(" {short} "),
-            Style::default().fg(Color::Rgb(255, 40, 51)).bg(sc.chrome_dark),
+            Style::default()
+                .fg(Color::Rgb(255, 40, 51))
+                .bg(sc.chrome_dark),
         )
     } else {
         Span::styled("", Style::default())
@@ -467,25 +475,17 @@ fn render_skinlist(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
                 Span::styled(" ", Style::default().fg(sc.plist_normal))
             };
 
-            let downloading = app
-                .skin_downloading_md5
-                .as_ref() == Some(&entry.md5);
+            let downloading = app.skin_downloading_md5.as_ref() == Some(&entry.md5);
 
             let status_tag = if downloading {
-                Span::styled(
-                    " \u{25B6}\u{25B6}",
-                    Style::default().fg(sc.led_on),
-                )
+                Span::styled(" \u{25B6}\u{25B6}", Style::default().fg(sc.led_on))
             } else {
                 Span::raw("")
             };
 
             let swatch = parse_average_color(&entry.average_color)
                 .map(|(r, g, b)| {
-                    Span::styled(
-                        "\u{2588}\u{2588}",
-                        Style::default().fg(Color::Rgb(r, g, b)),
-                    )
+                    Span::styled("\u{2588}\u{2588}", Style::default().fg(Color::Rgb(r, g, b)))
                 })
                 .unwrap_or_else(|| Span::raw("  "));
 
@@ -564,30 +564,60 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let hints = if app.skin_search_active {
         vec![
             Span::styled(" Enter", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-            Span::styled(" search ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
+            Span::styled(
+                " search ",
+                Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
+            ),
             Span::styled("Esc", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-            Span::styled(" cancel", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
+            Span::styled(
+                " cancel",
+                Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
+            ),
         ]
     } else {
         let mut h = vec![
             Span::styled(" /", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-            Span::styled(" search ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
+            Span::styled(
+                " search ",
+                Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
+            ),
             Span::styled("j/k", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-            Span::styled(" nav ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
+            Span::styled(
+                " nav ",
+                Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
+            ),
             Span::styled("Enter", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
         ];
         match app.skin_browser_source {
             SkinBrowserSource::Local => {
-                h.push(Span::styled(" apply ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)));
+                h.push(Span::styled(
+                    " apply ",
+                    Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
+                ));
             }
             SkinBrowserSource::Online => {
-                h.push(Span::styled(" download ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)));
-                h.push(Span::styled("n", Style::default().fg(sc.led_on).bg(sc.chrome_dark)));
-                h.push(Span::styled(" more ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)));
+                h.push(Span::styled(
+                    " download ",
+                    Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
+                ));
+                h.push(Span::styled(
+                    "n",
+                    Style::default().fg(sc.led_on).bg(sc.chrome_dark),
+                ));
+                h.push(Span::styled(
+                    " more ",
+                    Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
+                ));
             }
         }
-        h.push(Span::styled("Esc", Style::default().fg(sc.led_on).bg(sc.chrome_dark)));
-        h.push(Span::styled(" back", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)));
+        h.push(Span::styled(
+            "Esc",
+            Style::default().fg(sc.led_on).bg(sc.chrome_dark),
+        ));
+        h.push(Span::styled(
+            " back",
+            Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
+        ));
         h
     };
     frame.render_widget(

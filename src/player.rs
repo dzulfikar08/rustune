@@ -26,8 +26,8 @@ mod local {
     use std::time::Duration;
 
     use anyhow::Context;
-    use rodio::{Decoder, Player, Source};
     use rodio::stream::DeviceSinkBuilder;
+    use rodio::{Decoder, Player, Source};
     use tokio::sync::mpsc;
 
     use crate::event::AppEvent;
@@ -42,8 +42,8 @@ mod local {
 
     impl LocalHandle {
         pub fn new(tx: mpsc::UnboundedSender<AppEvent>) -> anyhow::Result<Self> {
-            let device_sink = DeviceSinkBuilder::open_default_sink()
-                .context("No audio output device found")?;
+            let device_sink =
+                DeviceSinkBuilder::open_default_sink().context("No audio output device found")?;
             let mixer = device_sink.mixer();
             let player = Player::connect_new(mixer);
             let player = Arc::new(Mutex::new(player));
@@ -91,7 +91,8 @@ mod local {
             let source = Decoder::new(reader)
                 .with_context(|| format!("Failed to decode audio file: {path}"))?;
 
-            let total_duration = source.total_duration()
+            let total_duration = source
+                .total_duration()
                 .map(|d: Duration| d.as_secs())
                 .unwrap_or(0);
             self.duration.store(total_duration, Ordering::Relaxed);
@@ -112,7 +113,9 @@ mod local {
         }
 
         pub fn seek_to(&self, pos: Duration) -> anyhow::Result<()> {
-            self.player.lock().unwrap()
+            self.player
+                .lock()
+                .unwrap()
                 .try_seek(pos)
                 .map_err(|e| anyhow::anyhow!("Seek failed: {e}"))?;
             Ok(())
@@ -157,10 +160,8 @@ mod mpv_imp {
 
     impl MpvHandle {
         pub fn new(tx: mpsc::UnboundedSender<AppEvent>) -> Result<Self> {
-            let socket = std::env::temp_dir().join(format!(
-                "rustune-mpv-{}.sock",
-                std::process::id()
-            ));
+            let socket =
+                std::env::temp_dir().join(format!("rustune-mpv-{}.sock", std::process::id()));
             let _ = std::fs::remove_file(&socket);
 
             let child = tokio::process::Command::new("mpv")
@@ -225,10 +226,7 @@ mod mpv_imp {
                         }
 
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
-                            let rid = val
-                                .get("request_id")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
+                            let rid = val.get("request_id").and_then(|v| v.as_u64()).unwrap_or(0);
 
                             if rid == time_id {
                                 if let Some(d) = val.get("data").and_then(|v| v.as_f64()) {
@@ -285,7 +283,9 @@ mod mpv_imp {
             let socket = self.socket.clone();
             tokio::spawn(async move {
                 for _ in 0..50 {
-                    if socket.exists() { break; }
+                    if socket.exists() {
+                        break;
+                    }
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
                 let _ = set_property(&socket, "pause", paused).await;
@@ -297,7 +297,9 @@ mod mpv_imp {
             let socket = self.socket.clone();
             tokio::spawn(async move {
                 for _ in 0..50 {
-                    if socket.exists() { break; }
+                    if socket.exists() {
+                        break;
+                    }
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
                 let _ = set_property(&socket, "time-pos", position_secs).await;
@@ -323,12 +325,8 @@ mod mpv_imp {
             .context("Failed to connect to mpv IPC socket")?;
         let (_, mut writer) = stream.into_split();
         let escaped = url.replace('\\', "\\\\").replace('"', "\\\"");
-        let req = format!(
-            r#"{{"command":["loadfile","{escaped}"],"request_id":1}}"#
-        );
-        writer
-            .write_all(format!("{req}\n").as_bytes())
-            .await?;
+        let req = format!(r#"{{"command":["loadfile","{escaped}"],"request_id":1}}"#);
+        writer.write_all(format!("{req}\n").as_bytes()).await?;
         writer.flush().await?;
         Ok(())
     }
@@ -342,12 +340,8 @@ mod mpv_imp {
             .await
             .context("Failed to connect to mpv IPC socket")?;
         let (_, mut writer) = stream.into_split();
-        let req = format!(
-            r#"{{"command":["set_property","{property}",{value}],"request_id":1}}"#
-        );
-        writer
-            .write_all(format!("{req}\n").as_bytes())
-            .await?;
+        let req = format!(r#"{{"command":["set_property","{property}",{value}],"request_id":1}}"#);
+        writer.write_all(format!("{req}\n").as_bytes()).await?;
         writer.flush().await?;
         Ok(())
     }
@@ -379,10 +373,7 @@ mod mpv_imp {
     }
 
     impl MpvHandle {
-        pub fn new(
-            url: String,
-            tx: mpsc::UnboundedSender<AppEvent>,
-        ) -> Result<Self> {
+        pub fn new(url: String, tx: mpsc::UnboundedSender<AppEvent>) -> Result<Self> {
             let child = tokio::process::Command::new("mpv")
                 .arg("--no-video")
                 .arg("--idle=no")

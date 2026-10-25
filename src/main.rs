@@ -1,4 +1,6 @@
 mod app;
+#[allow(dead_code)]
+mod command;
 mod config;
 mod event;
 mod extractor;
@@ -6,8 +8,12 @@ mod media;
 mod player;
 mod skin;
 mod source;
+#[allow(dead_code)]
+mod tap;
 mod theme;
 mod ui;
+#[allow(dead_code)]
+mod view;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,7 +23,10 @@ use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, KeyEventK
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc;
 
-use app::{App, BrowseAction, InputAction, Mode, MouseAction, OnboardingAction, SettingsAction, SkinBrowserAction, Status};
+use app::{
+    App, BrowseAction, InputAction, Mode, MouseAction, OnboardingAction, SettingsAction,
+    SkinBrowserAction, Status,
+};
 use event::AppEvent;
 use extractor::{ExtractorRegistry, ExtractorStatus, YtdlpExtractor};
 use media::SourceKind;
@@ -107,7 +116,14 @@ async fn run_doctor() {
                     Some(first_line.to_string())
                 })
                 .unwrap_or_else(|| "unknown".to_string());
-            println!("  [ok] mpv: {}", version.split_whitespace().take(2).collect::<Vec<_>>().join(" "));
+            println!(
+                "  [ok] mpv: {}",
+                version
+                    .split_whitespace()
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
             true
         }
         Err(e) => {
@@ -145,7 +161,10 @@ async fn run_doctor() {
     if config_dir.exists() {
         println!("  [ok] config: {}", config_dir.display());
     } else {
-        println!("  [--] config: {} (will be created on first run)", config_dir.display());
+        println!(
+            "  [--] config: {} (will be created on first run)",
+            config_dir.display()
+        );
     }
 
     // Check music directory
@@ -254,7 +273,9 @@ async fn run(mut terminal: DefaultTerminal, config: config::Config) -> Result<()
                 if dep_idx == 0 {
                     println!("\n  Please install mpv manually from https://mpv.io");
                 } else {
-                    println!("\n  Please install yt-dlp manually from https://github.com/yt-dlp/yt-dlp");
+                    println!(
+                        "\n  Please install yt-dlp manually from https://github.com/yt-dlp/yt-dlp"
+                    );
                 }
                 println!("\nPress Enter to return to rustune...");
                 let mut buf = String::new();
@@ -346,7 +367,7 @@ fn handle_key(
                                 SourceKind::Local
                             }
                         }
-                        SourceKind::Extractor(_) => SourceKind::Local,
+                        SourceKind::Extractor(_) | SourceKind::Url => SourceKind::Local,
                     };
                     app.results.clear();
                     app.list_state.select(Some(0));
@@ -400,7 +421,8 @@ fn handle_key(
                     // Populate with local skins
                     let local_skins = skin::WinampSkin::available_skins();
                     for p in &local_skins {
-                        let filename = p.file_name()
+                        let filename = p
+                            .file_name()
                             .and_then(|s| s.to_str())
                             .unwrap_or("unknown")
                             .to_string();
@@ -461,7 +483,8 @@ fn handle_key(
                     match skin::WinampSkin::from_wsz(&skin_path) {
                         Ok(skin) => {
                             app.winamp_skin = Some(skin);
-                            app.skin_layout = app.winamp_skin.as_ref().and_then(SkinLayout::from_skin);
+                            app.skin_layout =
+                                app.winamp_skin.as_ref().and_then(SkinLayout::from_skin);
                         }
                         Err(e) => {
                             app.skin_browser_error = Some(format!("Failed to load skin: {e}"));
@@ -570,6 +593,7 @@ fn play_item(
                 app.status = Status::Error(format!("Extractor '{}' not found", name));
             }
         }
+        SourceKind::Url => start_stream_playback(app, id, title, tx),
     }
 }
 
@@ -693,30 +717,26 @@ fn handle_app_event(
     _registry: &Arc<ExtractorRegistry>,
 ) {
     match event {
-        AppEvent::ItemsReady { results, source: _ } => {
-            match results {
-                Ok(items) => {
-                    app.results = items;
-                    app.status = Status::Idle;
-                    if !app.results.is_empty() {
-                        app.list_state.select(Some(0));
-                    }
-                }
-                Err(e) => {
-                    app.status = Status::Error(format!("Search failed: {e}"));
+        AppEvent::ItemsReady { results, source: _ } => match results {
+            Ok(items) => {
+                app.results = items;
+                app.status = Status::Idle;
+                if !app.results.is_empty() {
+                    app.list_state.select(Some(0));
                 }
             }
-        }
-        AppEvent::StreamReady(result) => {
-            match result {
-                Ok(info) => {
-                    start_stream_playback(app, info.url, info.title, tx);
-                }
-                Err(e) => {
-                    app.status = Status::Error(format!("Playback failed: {e}"));
-                }
+            Err(e) => {
+                app.status = Status::Error(format!("Search failed: {e}"));
             }
-        }
+        },
+        AppEvent::StreamReady(result) => match result {
+            Ok(info) => {
+                start_stream_playback(app, info.url, info.title, tx);
+            }
+            Err(e) => {
+                app.status = Status::Error(format!("Playback failed: {e}"));
+            }
+        },
         AppEvent::PlaybackProgress {
             elapsed_secs,
             duration_secs,
@@ -733,33 +753,32 @@ fn handle_app_event(
             app.playback = None;
             app.status = Status::Error(msg);
         }
-        AppEvent::ExtractorStatus { name, status } => {
-            match status {
-                ExtractorStatus::Available(_) => {
-                    app.status = Status::Idle;
-                }
-                ExtractorStatus::NotFound | ExtractorStatus::Broken(_) => {
-                    if app.active_source == SourceKind::Extractor(name.clone()) {
-                        app.active_source = SourceKind::Local;
-                    }
+        AppEvent::ExtractorStatus { name, status } => match status {
+            ExtractorStatus::Available(_) => {
+                app.status = Status::Idle;
+            }
+            ExtractorStatus::NotFound | ExtractorStatus::Broken(_) => {
+                if app.active_source == SourceKind::Extractor(name.clone()) {
+                    app.active_source = SourceKind::Local;
                 }
             }
-        }
-        AppEvent::ScanComplete(result) => {
-            match result {
-                Ok(items) => {
-                    app.results = items;
-                    app.status = Status::Idle;
-                    if !app.results.is_empty() {
-                        app.list_state.select(Some(0));
-                    }
-                }
-                Err(e) => {
-                    app.status = Status::Error(format!("Scan failed: {e}"));
+        },
+        AppEvent::ScanComplete(result) => match result {
+            Ok(items) => {
+                app.results = items;
+                app.status = Status::Idle;
+                if !app.results.is_empty() {
+                    app.list_state.select(Some(0));
                 }
             }
-        }
-        AppEvent::SkinListFetched { entries, requested_offset } => {
+            Err(e) => {
+                app.status = Status::Error(format!("Scan failed: {e}"));
+            }
+        },
+        AppEvent::SkinListFetched {
+            entries,
+            requested_offset,
+        } => {
             app.skin_browser_loading = false;
             match entries {
                 Ok((new_entries, total_count)) => {
@@ -769,7 +788,9 @@ fn handle_app_event(
                         app.skin_entries.extend(new_entries);
                         // Re-sort entire list alphabetically after append
                         app.skin_entries.sort_by(|a, b| {
-                            a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase())
+                            a.display_name
+                                .to_lowercase()
+                                .cmp(&b.display_name.to_lowercase())
                         });
                     }
                     app.skin_total_count = total_count;
@@ -783,7 +804,11 @@ fn handle_app_event(
                 }
             }
         }
-        AppEvent::SkinDownloaded { md5: _, filename, result } => {
+        AppEvent::SkinDownloaded {
+            md5: _,
+            filename,
+            result,
+        } => {
             app.skin_downloading_md5 = None;
             match result {
                 Ok(()) => {
@@ -800,7 +825,8 @@ fn handle_app_event(
                     match skin::WinampSkin::from_wsz(&skin_path) {
                         Ok(skin) => {
                             app.winamp_skin = Some(skin);
-                            app.skin_layout = app.winamp_skin.as_ref().and_then(SkinLayout::from_skin);
+                            app.skin_layout =
+                                app.winamp_skin.as_ref().and_then(SkinLayout::from_skin);
                         }
                         Err(e) => {
                             app.skin_browser_error = Some(format!("Failed to load skin: {e}"));
@@ -875,7 +901,10 @@ fn handle_mouse(
                 dispatch_search(app, tx, registry);
             }
         }
-        MouseAction::ScrollUp | MouseAction::ScrollDown | MouseAction::SelectResult(_) | MouseAction::None => {}
+        MouseAction::ScrollUp
+        | MouseAction::ScrollDown
+        | MouseAction::SelectResult(_)
+        | MouseAction::None => {}
     }
 }
 
@@ -889,16 +918,16 @@ fn install_dependency(label: &str, program: &str, args: &[&str]) -> (bool, Defau
     println!("\nInstalling {label}...");
     println!("  $ {program} {args_str}");
 
-    let success = match std::process::Command::new(program)
-        .args(args)
-        .status()
-    {
+    let success = match std::process::Command::new(program).args(args).status() {
         Ok(status) if status.success() => {
             println!("\n  {label} installed successfully.");
             true
         }
         Ok(status) => {
-            println!("\n  Installation failed with exit code: {}", status.code().unwrap_or(-1));
+            println!(
+                "\n  Installation failed with exit code: {}",
+                status.code().unwrap_or(-1)
+            );
             false
         }
         Err(e) => {
@@ -921,28 +950,46 @@ fn install_dependency(label: &str, program: &str, args: &[&str]) -> (bool, Defau
 #[cfg(unix)]
 fn get_install_commands() -> (Option<(String, Vec<String>)>, Option<(String, Vec<String>)>) {
     // mpv install command
-    let mpv_cmd = if std::path::Path::new("/opt/homebrew/bin/brew").exists()
-        || which_exists("brew")
+    let mpv_cmd = if std::path::Path::new("/opt/homebrew/bin/brew").exists() || which_exists("brew")
     {
-        Some(("brew".to_string(), vec!["install".to_string(), "mpv".to_string()]))
+        Some((
+            "brew".to_string(),
+            vec!["install".to_string(), "mpv".to_string()],
+        ))
     } else if which_exists("apt") {
-        Some(("sudo".to_string(), vec!["apt".to_string(), "install".to_string(), "-y".to_string(), "mpv".to_string()]))
+        Some((
+            "sudo".to_string(),
+            vec![
+                "apt".to_string(),
+                "install".to_string(),
+                "-y".to_string(),
+                "mpv".to_string(),
+            ],
+        ))
     } else {
         None
     };
 
     // yt-dlp install command
-    let ytdlp_cmd = if std::path::Path::new("/opt/homebrew/bin/brew").exists()
-        || which_exists("brew")
-    {
-        Some(("brew".to_string(), vec!["install".to_string(), "yt-dlp".to_string()]))
-    } else if which_exists("pipx") {
-        Some(("pipx".to_string(), vec!["install".to_string(), "yt-dlp".to_string()]))
-    } else if which_exists("pip") {
-        Some(("pip".to_string(), vec!["install".to_string(), "yt-dlp".to_string()]))
-    } else {
-        None
-    };
+    let ytdlp_cmd =
+        if std::path::Path::new("/opt/homebrew/bin/brew").exists() || which_exists("brew") {
+            Some((
+                "brew".to_string(),
+                vec!["install".to_string(), "yt-dlp".to_string()],
+            ))
+        } else if which_exists("pipx") {
+            Some((
+                "pipx".to_string(),
+                vec!["install".to_string(), "yt-dlp".to_string()],
+            ))
+        } else if which_exists("pip") {
+            Some((
+                "pip".to_string(),
+                vec!["install".to_string(), "yt-dlp".to_string()],
+            ))
+        } else {
+            None
+        };
 
     (mpv_cmd, ytdlp_cmd)
 }
@@ -1077,7 +1124,10 @@ async fn fetch_skin_search_inner(
         .map(|s| {
             let md5 = s["md5"].as_str().unwrap_or("").to_string();
             let raw_filename = s["filename"].as_str().unwrap_or("").to_string();
-            let display_name = raw_filename.trim_end_matches(".wsz").trim_end_matches(".zip").to_string();
+            let display_name = raw_filename
+                .trim_end_matches(".wsz")
+                .trim_end_matches(".zip")
+                .to_string();
             let is_local = local_md5s.iter().any(|l| l == &md5.to_lowercase());
             let average_color = s["average_color"].as_str().map(|c| c.to_string());
             app::SkinEntry {
@@ -1092,7 +1142,11 @@ async fn fetch_skin_search_inner(
         .collect();
 
     let total = entries.len();
-    entries.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
+    entries.sort_by(|a, b| {
+        a.display_name
+            .to_lowercase()
+            .cmp(&b.display_name.to_lowercase())
+    });
 
     Ok((entries, total))
 }
@@ -1116,9 +1170,7 @@ async fn fetch_skin_list_inner(
 
     let body: serde_json::Value = resp.json().await?;
 
-    let total_count = body["data"]["skins"]["count"]
-        .as_u64()
-        .unwrap_or(0) as usize;
+    let total_count = body["data"]["skins"]["count"].as_u64().unwrap_or(0) as usize;
 
     let skins_arr = body["data"]["skins"]["nodes"]
         .as_array()
@@ -1141,7 +1193,10 @@ async fn fetch_skin_list_inner(
         .map(|s| {
             let md5 = s["md5"].as_str().unwrap_or("").to_string();
             let raw_filename = s["filename"].as_str().unwrap_or("").to_string();
-            let display_name = raw_filename.trim_end_matches(".wsz").trim_end_matches(".zip").to_string();
+            let display_name = raw_filename
+                .trim_end_matches(".wsz")
+                .trim_end_matches(".zip")
+                .to_string();
             let is_local = local_md5s.iter().any(|l| l == &md5.to_lowercase());
             let average_color = s["average_color"].as_str().map(|c| c.to_string());
             app::SkinEntry {
@@ -1156,17 +1211,16 @@ async fn fetch_skin_list_inner(
         .collect();
 
     // Sort alphabetically by display name
-    entries.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
+    entries.sort_by(|a, b| {
+        a.display_name
+            .to_lowercase()
+            .cmp(&b.display_name.to_lowercase())
+    });
 
     Ok((entries, total_count))
 }
 
-fn download_audio(
-    app: &mut App,
-    id: String,
-    title: String,
-    tx: &mpsc::UnboundedSender<AppEvent>,
-) {
+fn download_audio(app: &mut App, id: String, title: String, tx: &mpsc::UnboundedSender<AppEvent>) {
     let music_dir = app.config.music_dir.clone();
     app.downloading_title = Some(title.clone());
     app.status = Status::Downloading(title.clone());
@@ -1174,14 +1228,15 @@ fn download_audio(
     let tx = tx.clone();
     tokio::spawn(async move {
         let result = download_audio_inner(&id, &title, &music_dir).await;
-        let _ = tx.send(AppEvent::DownloadComplete {
-            title,
-            result,
-        });
+        let _ = tx.send(AppEvent::DownloadComplete { title, result });
     });
 }
 
-async fn download_audio_inner(id: &str, title: &str, music_dir: &std::path::Path) -> anyhow::Result<()> {
+async fn download_audio_inner(
+    id: &str,
+    title: &str,
+    music_dir: &std::path::Path,
+) -> anyhow::Result<()> {
     let safe_title: String = title
         .chars()
         .map(|c| match c {
@@ -1217,11 +1272,7 @@ async fn download_audio_inner(id: &str, title: &str, music_dir: &std::path::Path
 }
 
 /// Download a skin from the webamp CDN and save it to the skins directory.
-fn download_skin(
-    tx: &mpsc::UnboundedSender<AppEvent>,
-    md5: &str,
-    filename: &str,
-) {
+fn download_skin(tx: &mpsc::UnboundedSender<AppEvent>, md5: &str, filename: &str) {
     let tx = tx.clone();
     let md5 = md5.to_string();
     let filename = filename.to_string();

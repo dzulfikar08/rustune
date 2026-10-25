@@ -22,7 +22,9 @@ pub struct Config {
 }
 
 fn default_music_dir() -> PathBuf {
-    dirs::audio_dir().unwrap_or_else(|| PathBuf::from("~/Music")).join("")
+    dirs::audio_dir()
+        .unwrap_or_else(|| PathBuf::from("~/Music"))
+        .join("")
 }
 
 fn default_extensions() -> Vec<String> {

@@ -3,7 +3,6 @@
 /// Defines the Winamp 2.x pixel-coordinate regions within MAIN.BMP and maps
 /// them to terminal rows. Used by the bitmap renderer to paint chrome from
 /// actual skin bitmaps and overlay dynamic content on top.
-
 use std::collections::HashMap;
 
 use ratatui::layout::Rect;

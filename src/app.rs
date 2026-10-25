@@ -135,7 +135,7 @@ pub struct App {
     pub active_source: SourceKind,
     pub onboarding_step: OnboardingStep,
     pub onboarding_dep_selected: usize, // 0 = mpv, 1 = yt-dlp
-    pub pending_install: Option<usize>,  // Some(0) = mpv, Some(1) = yt-dlp
+    pub pending_install: Option<usize>, // Some(0) = mpv, Some(1) = yt-dlp
     pub settings_field: SettingsField,
     #[allow(dead_code)]
     pub settings_list_state: ListState,
@@ -303,10 +303,7 @@ impl App {
         }
     }
 
-    pub fn handle_browse_key(
-        &mut self,
-        key: crossterm::event::KeyEvent,
-    ) -> BrowseAction {
+    pub fn handle_browse_key(&mut self, key: crossterm::event::KeyEvent) -> BrowseAction {
         use crossterm::event::{KeyCode, KeyModifiers};
 
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
@@ -369,10 +366,7 @@ impl App {
         }
     }
 
-    pub fn handle_input_key(
-        &mut self,
-        key: crossterm::event::KeyEvent,
-    ) -> InputAction {
+    pub fn handle_input_key(&mut self, key: crossterm::event::KeyEvent) -> InputAction {
         use crossterm::event::{KeyCode, KeyModifiers};
 
         match key.code {
@@ -495,10 +489,7 @@ impl App {
         }
     }
 
-    pub fn handle_settings_key(
-        &mut self,
-        key: crossterm::event::KeyEvent,
-    ) -> SettingsAction {
+    pub fn handle_settings_key(&mut self, key: crossterm::event::KeyEvent) -> SettingsAction {
         use crossterm::event::KeyCode;
 
         match key.code {
@@ -564,10 +555,7 @@ impl App {
         }
     }
 
-    pub fn handle_onboarding_key(
-        &mut self,
-        key: crossterm::event::KeyEvent,
-    ) -> OnboardingAction {
+    pub fn handle_onboarding_key(&mut self, key: crossterm::event::KeyEvent) -> OnboardingAction {
         use crossterm::event::KeyCode;
 
         match self.onboarding_step {
@@ -618,7 +606,9 @@ impl App {
                 KeyCode::Backspace => {
                     if self.input_cursor > 0 {
                         self.input_cursor -= 1;
-                        if let Some((idx, _)) = self.input_text.char_indices().nth(self.input_cursor) {
+                        if let Some((idx, _)) =
+                            self.input_text.char_indices().nth(self.input_cursor)
+                        {
                             self.input_text.remove(idx);
                         }
                     }
@@ -743,7 +733,8 @@ impl App {
             }
             KeyCode::Char('G') | KeyCode::End => {
                 if !self.skin_entries.is_empty() {
-                    self.skin_list_state.select(Some(self.skin_entries.len() - 1));
+                    self.skin_list_state
+                        .select(Some(self.skin_entries.len() - 1));
                 }
                 SkinBrowserAction::None
             }
@@ -751,9 +742,7 @@ impl App {
                 if let Some(i) = self.skin_list_state.selected() {
                     if let Some(entry) = self.skin_entries.get(i) {
                         if entry.is_local {
-                            return SkinBrowserAction::LoadLocal(
-                                entry.filename.clone(),
-                            );
+                            return SkinBrowserAction::LoadLocal(entry.filename.clone());
                         } else if self.skin_downloading_md5.is_none() {
                             self.skin_downloading_md5 = Some(entry.md5.clone());
                             return SkinBrowserAction::Download(
@@ -804,15 +793,11 @@ impl App {
                     return MouseAction::TogglePause;
                 }
 
-                if rects.prev_page.area() > 0
-                    && rects.prev_page.contains(Position::new(col, row))
-                {
+                if rects.prev_page.area() > 0 && rects.prev_page.contains(Position::new(col, row)) {
                     return MouseAction::PrevPage;
                 }
 
-                if rects.next_page.area() > 0
-                    && rects.next_page.contains(Position::new(col, row))
-                {
+                if rects.next_page.area() > 0 && rects.next_page.contains(Position::new(col, row)) {
                     return MouseAction::NextPage;
                 }
 
@@ -830,7 +815,8 @@ impl App {
                     return MouseAction::None;
                 }
 
-                if rects.player_bar.area() > 0 && rects.player_bar.contains(Position::new(col, row)) {
+                if rects.player_bar.area() > 0 && rects.player_bar.contains(Position::new(col, row))
+                {
                     if let Some(ref playback) = self.playback {
                         if playback.duration_secs > 0 {
                             let bar_x = col as f64 - rects.player_bar.x as f64;

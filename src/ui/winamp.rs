@@ -112,15 +112,24 @@ impl SC {
             plist_normal_bg: Color::Black,
             plist_selected_bg: Color::Rgb(0, 0, 198),
             vis_colors: vec![
-                Color::Rgb(0, 0, 0),       Color::Rgb(24, 33, 41),
-                Color::Rgb(239, 49, 16),    Color::Rgb(206, 41, 16),
-                Color::Rgb(214, 90, 0),     Color::Rgb(214, 102, 0),
-                Color::Rgb(214, 115, 0),    Color::Rgb(198, 123, 8),
-                Color::Rgb(222, 165, 24),   Color::Rgb(214, 181, 33),
-                Color::Rgb(189, 222, 41),   Color::Rgb(148, 222, 33),
-                Color::Rgb(41, 206, 16),    Color::Rgb(50, 190, 16),
-                Color::Rgb(57, 181, 16),    Color::Rgb(49, 156, 8),
-                Color::Rgb(41, 148, 0),     Color::Rgb(24, 132, 8),
+                Color::Rgb(0, 0, 0),
+                Color::Rgb(24, 33, 41),
+                Color::Rgb(239, 49, 16),
+                Color::Rgb(206, 41, 16),
+                Color::Rgb(214, 90, 0),
+                Color::Rgb(214, 102, 0),
+                Color::Rgb(214, 115, 0),
+                Color::Rgb(198, 123, 8),
+                Color::Rgb(222, 165, 24),
+                Color::Rgb(214, 181, 33),
+                Color::Rgb(189, 222, 41),
+                Color::Rgb(148, 222, 33),
+                Color::Rgb(41, 206, 16),
+                Color::Rgb(50, 190, 16),
+                Color::Rgb(57, 181, 16),
+                Color::Rgb(49, 156, 8),
+                Color::Rgb(41, 148, 0),
+                Color::Rgb(24, 132, 8),
             ],
             btn_normal: Color::Rgb(34, 33, 51),
             btn_text: Color::White,
@@ -149,8 +158,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 fn render_bitmap_mode(frame: &mut Frame, app: &mut App) {
     let sc = SC::from_app(app);
     let area = frame.area();
-    let skin = app.winamp_skin.as_ref().expect("winamp_skin must be Some when layout is Some");
-    let main_bmp = skin.main_bitmap.as_ref().expect("main_bitmap required for bitmap mode");
+    let skin = app
+        .winamp_skin
+        .as_ref()
+        .expect("winamp_skin must be Some when layout is Some");
+    let main_bmp = skin
+        .main_bitmap
+        .as_ref()
+        .expect("main_bitmap required for bitmap mode");
 
     // Layout: 6-row main window, 1-row playlist title, flexible playlist body, 2-row footer
     let main_rows: u16 = 6;
@@ -213,11 +228,15 @@ fn render_bitmap_mode(frame: &mut Frame, app: &mut App) {
         pause_button,
         prev_page: Rect::new(
             pl_body_area.x + pl_body_area.width.saturating_sub(6),
-            pl_body_area.y, 3, 1,
+            pl_body_area.y,
+            3,
+            1,
         ),
         next_page: Rect::new(
             pl_body_area.x + pl_body_area.width.saturating_sub(3),
-            pl_body_area.y, 3, 1,
+            pl_body_area.y,
+            3,
+            1,
         ),
     };
 }
@@ -236,9 +255,14 @@ fn render_bitmap_titlebar(frame: &mut Frame, area: Rect, app: &App, _sc: &SC) {
     let x = area.x + area.width.saturating_sub(title_len) / 2;
 
     let buf = frame.buffer_mut();
-    buf.set_string(x, area.y, title, Style::default()
-        .fg(Color::White)
-        .add_modifier(Modifier::BOLD));
+    buf.set_string(
+        x,
+        area.y,
+        title,
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    );
 }
 
 // Row 1 — LED time + vis overlay: paint time and vis bars, leave bitmap visible
@@ -267,9 +291,12 @@ fn render_bitmap_time_vis(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
 
     // LED time
     let time_str = format!(" {}:{:02} ", elapsed / 60, elapsed % 60);
-    buf.set_string(x, area.y, &time_str, Style::default()
-        .fg(sc.led_on)
-        .add_modifier(Modifier::BOLD));
+    buf.set_string(
+        x,
+        area.y,
+        &time_str,
+        Style::default().fg(sc.led_on).add_modifier(Modifier::BOLD),
+    );
     x += time_str.len() as u16;
 
     // Visualization bars (only in the right portion of the row)
@@ -299,7 +326,10 @@ fn render_bitmap_marquee(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let title = match &app.playback {
         Some(pb) => pb.title.clone(),
         None => match &app.status {
-            Status::Loading(t) | Status::Searching(t) | Status::Scanning(t) | Status::Downloading(t) => t.clone(),
+            Status::Loading(t)
+            | Status::Searching(t)
+            | Status::Scanning(t)
+            | Status::Downloading(t) => t.clone(),
             Status::Error(t) => t.clone(),
             _ => "  ***  rustune  ***  ".into(),
         },
@@ -316,7 +346,12 @@ fn render_bitmap_marquee(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     };
 
     let buf = frame.buffer_mut();
-    buf.set_string(area.x + 1, area.y, &display, Style::default().fg(sc.text_fg));
+    buf.set_string(
+        area.x + 1,
+        area.y,
+        &display,
+        Style::default().fg(sc.text_fg),
+    );
 }
 
 // Row 3 — Seek bar overlay: paint progress gauge, leave bitmap visible
@@ -351,10 +386,20 @@ fn render_bitmap_seekbar(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
 
     // Paint filled/unfilled — no bg to keep bitmap visible
     if filled > 0 {
-        buf.set_string(gauge_x, area.y, &"█".repeat(filled as usize), Style::default().fg(sc.seek_filled));
+        buf.set_string(
+            gauge_x,
+            area.y,
+            &"█".repeat(filled as usize),
+            Style::default().fg(sc.seek_filled),
+        );
     }
     if unfilled > 0 {
-        buf.set_string(gauge_x + filled, area.y, &"░".repeat(unfilled as usize), Style::default().fg(sc.seek_track));
+        buf.set_string(
+            gauge_x + filled,
+            area.y,
+            &"░".repeat(unfilled as usize),
+            Style::default().fg(sc.seek_track),
+        );
     }
     buf.set_string(label_x, area.y, &label, Style::default().fg(sc.led_on));
 }
@@ -375,8 +420,16 @@ fn render_bitmap_transport(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let btn_fg = sc.btn_text;
     let active_fg = Color::Black;
 
-    let play_fg = if is_playing && !is_paused { sc.play_indicator } else { btn_fg };
-    let pause_fg = if is_paused { sc.pause_indicator } else { btn_fg };
+    let play_fg = if is_playing && !is_paused {
+        sc.play_indicator
+    } else {
+        btn_fg
+    };
+    let pause_fg = if is_paused {
+        sc.pause_indicator
+    } else {
+        btn_fg
+    };
 
     btn(" ⏮ ", active_fg, buf, &mut x);
     btn(" ⏪ ", btn_fg, buf, &mut x);
@@ -402,7 +455,7 @@ fn render_bitmap_status(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
 
     let source_label = match app.active_source {
         crate::media::SourceKind::Local => "LOCAL",
-        crate::media::SourceKind::Extractor(_) => "ONLINE",
+        crate::media::SourceKind::Extractor(_) | crate::media::SourceKind::Url => "ONLINE",
     };
 
     // No bg — keep bitmap visible
@@ -412,11 +465,16 @@ fn render_bitmap_status(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     x += 5;
 
     let label = format!(" {source_label} ");
-    buf.set_string(area.x + area.width.saturating_sub(label.len() as u16), area.y, &label,
-        Style::default().fg(sc.titlebar_bg).add_modifier(Modifier::BOLD));
+    buf.set_string(
+        area.x + area.width.saturating_sub(label.len() as u16),
+        area.y,
+        &label,
+        Style::default()
+            .fg(sc.titlebar_bg)
+            .add_modifier(Modifier::BOLD),
+    );
 
-    buf.set_string(x + 3, area.y, "mono/stereo",
-        Style::default().fg(mono_fg));
+    buf.set_string(x + 3, area.y, "mono/stereo", Style::default().fg(mono_fg));
 }
 
 // ─── Text mode (original renderer, fallback when bitmaps unavailable) ───
@@ -439,9 +497,9 @@ fn render_text_mode(frame: &mut Frame, app: &mut App) {
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(main_rows),  // main window panel
-            Constraint::Length(1),          // separator (playlist title bar)
-            Constraint::Min(3),            // playlist body
+            Constraint::Length(main_rows),   // main window panel
+            Constraint::Length(1),           // separator (playlist title bar)
+            Constraint::Min(3),              // playlist body
             Constraint::Length(footer_rows), // input + hints
         ])
         .split(area);
@@ -470,11 +528,15 @@ fn render_text_mode(frame: &mut Frame, app: &mut App) {
         pause_button,
         prev_page: Rect::new(
             pl_body_area.x + pl_body_area.width.saturating_sub(6),
-            pl_body_area.y, 3, 1,
+            pl_body_area.y,
+            3,
+            1,
         ),
         next_page: Rect::new(
             pl_body_area.x + pl_body_area.width.saturating_sub(3),
-            pl_body_area.y, 3, 1,
+            pl_body_area.y,
+            3,
+            1,
         ),
     };
 }
@@ -553,11 +615,20 @@ fn render_time_and_vis(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let is_paused = app.playback.as_ref().is_some_and(|p| p.paused);
 
     let state_icon = if !is_playing {
-        Span::styled(" \u{25A0} ", Style::default().fg(sc.indicator_off).bg(sc.led_bg))
+        Span::styled(
+            " \u{25A0} ",
+            Style::default().fg(sc.indicator_off).bg(sc.led_bg),
+        )
     } else if is_paused {
-        Span::styled(" \u{2016} ", Style::default().fg(sc.pause_indicator).bg(sc.led_bg))
+        Span::styled(
+            " \u{2016} ",
+            Style::default().fg(sc.pause_indicator).bg(sc.led_bg),
+        )
     } else {
-        Span::styled(" \u{25B6} ", Style::default().fg(sc.play_indicator).bg(sc.led_bg))
+        Span::styled(
+            " \u{25B6} ",
+            Style::default().fg(sc.play_indicator).bg(sc.led_bg),
+        )
     };
 
     // LED time from NUMBERS.BMP — format like "12:34"
@@ -580,8 +651,8 @@ fn render_time_and_vis(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
 
     if is_playing && !is_paused {
         let bar_chars = [
-            '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}',
-            '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}',
+            '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
+            '\u{2588}',
         ];
         for i in 0..bar_count {
             let h = ((seed.wrapping_mul(7).wrapping_add(i as u64 * 13)) % 6) as usize + 1;
@@ -621,7 +692,10 @@ fn render_marquee(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     let title = match &app.playback {
         Some(pb) => pb.title.clone(),
         None => match &app.status {
-            Status::Loading(t) | Status::Searching(t) | Status::Scanning(t) | Status::Downloading(t) => t.clone(),
+            Status::Loading(t)
+            | Status::Searching(t)
+            | Status::Scanning(t)
+            | Status::Downloading(t) => t.clone(),
             Status::Error(t) => t.clone(),
             _ => "  ***  rustune  ***  ".into(),
         },
@@ -638,10 +712,7 @@ fn render_marquee(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
 
     let line = Line::from(vec![
         Span::styled(" ", Style::default().bg(sc.text_bg)),
-        Span::styled(
-            display,
-            Style::default().fg(sc.text_fg).bg(sc.text_bg),
-        ),
+        Span::styled(display, Style::default().fg(sc.text_fg).bg(sc.text_bg)),
         Span::styled(
             " ".repeat(w.saturating_sub(1)),
             Style::default().bg(sc.text_bg),
@@ -716,31 +787,25 @@ fn render_transport(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
     );
 
     let line = Line::from(vec![
-        Span::styled(" \u{23EE} ", btn_active),      // prev
+        Span::styled(" \u{23EE} ", btn_active), // prev
         sep.clone(),
-        Span::styled(" \u{23EA} ", btn_style),        // rewind
+        Span::styled(" \u{23EA} ", btn_style), // rewind
         sep.clone(),
-        Span::styled(" \u{25B6} ", play_style),       // play
+        Span::styled(" \u{25B6} ", play_style), // play
         sep.clone(),
-        Span::styled(" \u{23F8} ", pause_style),      // pause
+        Span::styled(" \u{23F8} ", pause_style), // pause
         sep.clone(),
-        Span::styled(" \u{23F9} ", btn_style),        // stop
+        Span::styled(" \u{23F9} ", btn_style), // stop
         sep.clone(),
-        Span::styled(" \u{23E9} ", btn_style),        // fwd
+        Span::styled(" \u{23E9} ", btn_style), // fwd
         sep.clone(),
-        Span::styled(" \u{23ED} ", btn_active),       // next
+        Span::styled(" \u{23ED} ", btn_active), // next
         Span::styled("  ", Style::default().bg(sc.body_bg)),
         Span::styled("VOL", Style::default().fg(sc.chrome_light).bg(sc.body_bg)),
-        Span::styled(
-            vol_bar,
-            Style::default().fg(sc.led_on).bg(sc.body_bg),
-        ),
+        Span::styled(vol_bar, Style::default().fg(sc.led_on).bg(sc.body_bg)),
         Span::styled(" ", Style::default().bg(sc.body_bg)),
         Span::styled("BAL", Style::default().fg(sc.chrome_light).bg(sc.body_bg)),
-        Span::styled(
-            bal_bar,
-            Style::default().fg(sc.led_on).bg(sc.body_bg),
-        ),
+        Span::styled(bal_bar, Style::default().fg(sc.led_on).bg(sc.body_bg)),
     ]);
     frame.render_widget(
         Paragraph::new(line).style(Style::default().bg(sc.body_bg)),
@@ -769,7 +834,7 @@ fn render_status_row(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
 
     let source_label = match app.active_source {
         crate::media::SourceKind::Local => "LOCAL",
-        crate::media::SourceKind::Extractor(_) => "ONLINE",
+        crate::media::SourceKind::Extractor(_) | crate::media::SourceKind::Url => "ONLINE",
     };
 
     let line = Line::from(vec![
@@ -854,9 +919,10 @@ fn render_playlist_body(frame: &mut Frame, area: Rect, app: &mut App, sc: &SC) {
         return;
     }
 
-    let playing_idx = app.playback.as_ref().and_then(|pb| {
-        app.results.iter().position(|r| r.title == pb.title)
-    });
+    let playing_idx = app
+        .playback
+        .as_ref()
+        .and_then(|pb| app.results.iter().position(|r| r.title == pb.title));
 
     let items: Vec<ListItem> = app
         .results
@@ -891,10 +957,7 @@ fn render_playlist_body(frame: &mut Frame, area: Rect, app: &mut App, sc: &SC) {
 
             let line = Line::from(vec![
                 Span::styled(format!("{:>3}. ", i + 1), num_style),
-                Span::styled(
-                    format!("{}{subtitle}", result.title),
-                    title_style,
-                ),
+                Span::styled(format!("{}{subtitle}", result.title), title_style),
                 Span::styled(
                     format!("  {duration}"),
                     Style::default().fg(sc.indicator_off),
@@ -964,33 +1027,66 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
         Mode::Browse => {
             let mut v = vec![
                 Span::styled(" /", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-                Span::styled(" search ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
+                Span::styled(
+                    " search ",
+                    Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
+                ),
                 Span::styled("j/k", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-                Span::styled(" nav ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
+                Span::styled(
+                    " nav ",
+                    Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
+                ),
                 Span::styled("Enter", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-                Span::styled(" play ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
+                Span::styled(
+                    " play ",
+                    Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
+                ),
             ];
             if matches!(app.active_source, SourceKind::Extractor(_)) {
-                v.push(Span::styled("d", Style::default().fg(sc.led_on).bg(sc.chrome_dark)));
-                v.push(Span::styled(" dl ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)));
+                v.push(Span::styled(
+                    "d",
+                    Style::default().fg(sc.led_on).bg(sc.chrome_dark),
+                ));
+                v.push(Span::styled(
+                    " dl ",
+                    Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
+                ));
             }
             v.extend_from_slice(&[
                 Span::styled("Space", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-                Span::styled(" pause ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
+                Span::styled(
+                    " pause ",
+                    Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
+                ),
                 Span::styled("Tab", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-                Span::styled(" src ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
+                Span::styled(
+                    " src ",
+                    Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
+                ),
                 Span::styled("S", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-                Span::styled(" settings ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
+                Span::styled(
+                    " settings ",
+                    Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
+                ),
                 Span::styled("q", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-                Span::styled(" quit", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
+                Span::styled(
+                    " quit",
+                    Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
+                ),
             ]);
             v
         }
         Mode::Input => vec![
             Span::styled(" Enter", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-            Span::styled(" submit ", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
+            Span::styled(
+                " submit ",
+                Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
+            ),
             Span::styled("Esc", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-            Span::styled(" cancel", Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark)),
+            Span::styled(
+                " cancel",
+                Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
+            ),
         ],
         _ => vec![],
     };

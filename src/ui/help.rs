@@ -8,7 +8,13 @@ use crate::app::Mode;
 use crate::media::SourceKind;
 use crate::theme::Theme;
 
-pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, mode: &Mode, source: &SourceKind, theme: &Theme) {
+pub fn render(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    mode: &Mode,
+    source: &SourceKind,
+    theme: &Theme,
+) {
     let hints = match mode {
         Mode::Browse => {
             let mut v = vec![

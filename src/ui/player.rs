@@ -34,10 +34,7 @@ pub fn render(
                 Span::styled(btn_text.to_string(), btn_style),
                 Span::styled(" ", ratatui::style::Style::default()),
                 Span::styled(truncate(title, 50), theme.player_title),
-                Span::styled(
-                    format!("  {elapsed_str}/{duration_str}"),
-                    theme.player_time,
-                ),
+                Span::styled(format!("  {elapsed_str}/{duration_str}"), theme.player_time),
             ]);
             frame.render_widget(Paragraph::new(info), info_area);
 

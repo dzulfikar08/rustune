@@ -109,4 +109,3 @@ pub fn solid_fill(frame: &mut Frame, area: Rect, color: Color) {
         }
     }
 }
-

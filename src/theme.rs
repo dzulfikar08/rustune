@@ -48,12 +48,16 @@ impl Theme {
             gauge_filled: Style::default().fg(Color::Cyan).bg(Color::DarkGray),
             gauge_unfilled: Style::default().fg(Color::DarkGray),
             gauge_label: Style::default().fg(Color::White),
-            input_prompt: Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            input_prompt: Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
             input_text: Style::default().fg(Color::White),
             input_cursor: "\u{2588}".into(),
             help_key: Style::default().fg(Color::Yellow),
             help_desc: Style::default().fg(Color::DarkGray),
-            page_nav_active: Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            page_nav_active: Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
             page_nav_inactive: Style::default().fg(Color::DarkGray),
             error_text: Style::default().fg(Color::Red),
             searching_text: Style::default().fg(Color::Yellow),
@@ -81,12 +85,16 @@ impl Theme {
             gauge_filled: Style::default().fg(Color::Cyan).bg(Color::White),
             gauge_unfilled: Style::default().fg(Color::White),
             gauge_label: Style::default().fg(Color::Black),
-            input_prompt: Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+            input_prompt: Style::default()
+                .fg(Color::Blue)
+                .add_modifier(Modifier::BOLD),
             input_text: Style::default().fg(Color::Black),
             input_cursor: "\u{2588}".into(),
             help_key: Style::default().fg(Color::Blue),
             help_desc: Style::default().fg(Color::DarkGray),
-            page_nav_active: Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            page_nav_active: Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
             page_nav_inactive: Style::default().fg(Color::DarkGray),
             error_text: Style::default().fg(Color::Red),
             searching_text: Style::default().fg(Color::Blue),
@@ -110,8 +118,12 @@ impl Theme {
             player_title: Style::default().fg(Color::Rgb(0, 255, 0)),
             player_time: Style::default().fg(Color::Rgb(0, 200, 0)),
             player_button_play: Style::default().fg(Color::Black).bg(Color::Rgb(0, 255, 0)),
-            player_button_pause: Style::default().fg(Color::Black).bg(Color::Rgb(200, 255, 0)),
-            gauge_filled: Style::default().fg(Color::Rgb(0, 255, 0)).bg(Color::Rgb(0, 50, 0)),
+            player_button_pause: Style::default()
+                .fg(Color::Black)
+                .bg(Color::Rgb(200, 255, 0)),
+            gauge_filled: Style::default()
+                .fg(Color::Rgb(0, 255, 0))
+                .bg(Color::Rgb(0, 50, 0)),
             gauge_unfilled: Style::default().fg(Color::Rgb(0, 50, 0)),
             gauge_label: Style::default().fg(Color::Rgb(0, 255, 0)),
             input_prompt: Style::default()

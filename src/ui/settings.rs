@@ -13,7 +13,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     let outer = Block::bordered()
         .title(" Settings ")
-        .title_style(Style::default().fg(ratatui::style::Color::Cyan).add_modifier(Modifier::BOLD))
+        .title_style(
+            Style::default()
+                .fg(ratatui::style::Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
         .border_type(BorderType::Rounded)
         .border_style(theme.result_border);
 
@@ -31,11 +35,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             app.config.extensions.join(", "),
             SettingsField::Extensions,
         ),
-        (
-            "Theme",
-            app.config.theme.clone(),
-            SettingsField::Theme,
-        ),
+        ("Theme", app.config.theme.clone(), SettingsField::Theme),
         (
             "Page Size",
             app.config.page_size.to_string(),
@@ -102,8 +102,5 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         ])
         .split(inner);
 
-    frame.render_widget(
-        Paragraph::new(lines).alignment(Alignment::Left),
-        content[0],
-    );
+    frame.render_widget(Paragraph::new(lines).alignment(Alignment::Left), content[0]);
 }

@@ -43,7 +43,10 @@ impl Extractor for YtdlpExtractor {
     }
 
     fn status(&self) -> ExtractorStatus {
-        match std::process::Command::new("yt-dlp").arg("--version").output() {
+        match std::process::Command::new("yt-dlp")
+            .arg("--version")
+            .output()
+        {
             Ok(output) if output.status.success() => {
                 let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 ExtractorStatus::Available(version)
@@ -53,7 +56,11 @@ impl Extractor for YtdlpExtractor {
         }
     }
 
-    fn resolve(&self, id: &str, title: &str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<StreamInfo>> + Send + '_>> {
+    fn resolve(
+        &self,
+        id: &str,
+        title: &str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<StreamInfo>> + Send + '_>> {
         let id = id.to_string();
         let title = title.to_string();
         Box::pin(async move {
@@ -90,7 +97,13 @@ impl Extractor for YtdlpExtractor {
         })
     }
 
-    fn search(&self, query: &str, offset: usize, limit: usize) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<MediaItem>>> + Send + '_>> {
+    fn search(
+        &self,
+        query: &str,
+        offset: usize,
+        limit: usize,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<MediaItem>>> + Send + '_>>
+    {
         let query = query.to_string();
         Box::pin(async move {
             let count = offset + limit;
@@ -125,6 +138,8 @@ impl Extractor for YtdlpExtractor {
                     Ok(r) => results.push(MediaItem {
                         id: r.id,
                         title: r.title,
+                        artist: None,
+                        album: None,
                         duration: r.duration,
                         subtitle: r.channel,
                         source: SourceKind::Extractor("ytdlp".into()),

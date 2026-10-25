@@ -23,10 +23,7 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     ];
 
     if app.mode == Mode::Input {
-        spans.push(Span::styled(
-            theme.input_cursor.clone(),
-            theme.input_text,
-        ));
+        spans.push(Span::styled(theme.input_cursor.clone(), theme.input_text));
     }
 
     let line = Line::from(spans);

@@ -18,10 +18,16 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &mut App) {
             Status::Downloading(text) => text.clone(),
             Status::Error(text) => text.clone(),
             _ => match (app.active_source.clone(), app.input_history.is_empty()) {
-                (SourceKind::Local, true) => "No music files found. Press Tab to switch to online search.".to_string(),
+                (SourceKind::Local, true) => {
+                    "No music files found. Press Tab to switch to online search.".to_string()
+                }
                 (SourceKind::Local, false) => "No results found.".to_string(),
-                (SourceKind::Extractor(_), true) => "Press / to search".to_string(),
-                (SourceKind::Extractor(_), false) => "No results found.".to_string(),
+                (SourceKind::Extractor(_) | SourceKind::Url, true) => {
+                    "Press / to search".to_string()
+                }
+                (SourceKind::Extractor(_) | SourceKind::Url, false) => {
+                    "No results found.".to_string()
+                }
             },
         };
         let style = match &app.status {
@@ -35,6 +41,7 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &mut App) {
         let source_label = match app.active_source {
             SourceKind::Local => "Local Music",
             SourceKind::Extractor(ref name) => name.as_str(),
+            SourceKind::Url => "Online",
         };
 
         let title = if app.page > 0 {
@@ -49,7 +56,9 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &mut App) {
             .border_style(theme.result_border)
             .padding(Padding::horizontal(1));
 
-        let paragraph = ratatui::widgets::Paragraph::new(msg).style(style).block(block);
+        let paragraph = ratatui::widgets::Paragraph::new(msg)
+            .style(style)
+            .block(block);
         frame.render_widget(paragraph, area);
         return;
     }
@@ -108,6 +117,7 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &mut App) {
     let source_label = match app.active_source {
         SourceKind::Local => "Local Music",
         SourceKind::Extractor(ref name) => name.as_str(),
+        SourceKind::Url => "Online",
     };
 
     let title = if app.page > 0 {

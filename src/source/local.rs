@@ -19,7 +19,10 @@ impl LocalSource {
     /// Synchronous recursive scan of the music directory.
     pub fn scan_sync(&self) -> Result<Vec<MediaItem>> {
         if !self.music_dir.exists() {
-            anyhow::bail!("Music directory does not exist: {}", self.music_dir.display());
+            anyhow::bail!(
+                "Music directory does not exist: {}",
+                self.music_dir.display()
+            );
         }
 
         let mut items = Vec::new();
@@ -46,7 +49,8 @@ impl LocalSource {
     }
 
     fn scan_dir(&self, dir: &std::path::Path, items: &mut Vec<MediaItem>) -> Result<()> {
-        let entries = std::fs::read_dir(dir).context(format!("Failed to read dir: {}", dir.display()))?;
+        let entries =
+            std::fs::read_dir(dir).context(format!("Failed to read dir: {}", dir.display()))?;
 
         for entry in entries {
             let entry = entry?;
@@ -68,6 +72,8 @@ impl LocalSource {
                     items.push(MediaItem {
                         id: path.to_string_lossy().to_string(),
                         title,
+                        artist: None,
+                        album: None,
                         duration: None,
                         subtitle: path
                             .parent()
