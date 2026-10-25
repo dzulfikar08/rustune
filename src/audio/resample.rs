@@ -316,4 +316,95 @@ mod tests {
         remix(&[0.3, 0.4], 2, 2, &mut out);
         assert_eq!(out, [0.3, 0.4]);
     }
+
+    /// Least-squares fit of a sinusoid at `freq` Hz: (amplitude, residual rms).
+    fn fit(y: &[f32], freq: f64, rate: f64) -> (f64, f64) {
+        let w = 2.0 * PI * freq / rate;
+        let (mut ss, mut cc, mut sc, mut ys, mut yc) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        for (i, &v) in y.iter().enumerate() {
+            let (s, c) = (w * i as f64).sin_cos();
+            let v = f64::from(v);
+            ss += s * s;
+            cc += c * c;
+            sc += s * c;
+            ys += v * s;
+            yc += v * c;
+        }
+        let det = ss * cc - sc * sc;
+        let a = (ys * cc - yc * sc) / det;
+        let b = (yc * ss - ys * sc) / det;
+        let res: f64 = y
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| {
+                let (s, c) = (w * i as f64).sin_cos();
+                (f64::from(v) - a * s - b * c).powi(2)
+            })
+            .sum();
+        ((a * a + b * b).sqrt(), (res / y.len() as f64).sqrt())
+    }
+
+    fn db(x: f64) -> f64 {
+        20.0 * x.max(1e-12).log10()
+    }
+
+    /// Resample a 0.5-amplitude tone; returns (gain dB, spurious dB) where
+    /// spurious is everything in the output that is not the tone (images,
+    /// aliases, noise) relative to the input tone. When `freq` is above the
+    /// output Nyquist the whole output counts as spurious.
+    fn tone_response(inr: u32, outr: u32, freq: f64) -> (f64, f64) {
+        let input = sine(freq, f64::from(inr), inr as usize / 2, 1);
+        let mut r = Resampler::new(inr, outr, 1);
+        let out = run(&mut r, &input, 4096);
+        let margin = outr as usize / 20;
+        let body = &out[margin..out.len() - margin];
+        let input_rms = 0.5 / 2f64.sqrt();
+        if freq >= f64::from(outr) / 2.0 {
+            let rms = (body.iter().map(|&s| f64::from(s).powi(2)).sum::<f64>() / body.len() as f64)
+                .sqrt();
+            return (db(0.0), db(rms / input_rms));
+        }
+        let (amp, res) = fit(body, freq, f64::from(outr));
+        (db(amp / 0.5), db(res / input_rms))
+    }
+
+    /// Quality over a tone sweep for one rate pair: (passband min dB, passband
+    /// max dB up to 20 kHz-equivalent, gain at the passband edge, worst
+    /// spurious dB anywhere).
+    fn quality(inr: u32, outr: u32) -> (f64, f64, f64, f64) {
+        let nyq_lo = f64::from(inr.min(outr)) / 2.0;
+        let nyq_in = f64::from(inr) / 2.0;
+        let edge = nyq_lo * 20_000.0 / 22_050.0;
+        let (mut lo, mut hi, mut worst) = (f64::MAX, f64::MIN, f64::MIN);
+        let mut f = 20.0;
+        while f < nyq_in * 0.995 {
+            let (gain, spur) = tone_response(inr, outr, f);
+            if f <= edge {
+                lo = lo.min(gain);
+                hi = hi.max(gain);
+            }
+            worst = worst.max(spur);
+            f += nyq_in / 97.0;
+        }
+        let (edge_gain, _) = tone_response(inr, outr, edge);
+        (lo, hi, edge_gain, worst)
+    }
+
+    #[test]
+    #[ignore = "report: cargo test --release -- --ignored --nocapture bench_"]
+    fn bench_resampler_quality() {
+        println!("bench resampler quality (tone sweep up to the input Nyquist)");
+        for (inr, outr) in [
+            (44_100, 48_000),
+            (48_000, 44_100),
+            (96_000, 44_100),
+            (22_050, 48_000),
+        ] {
+            let (lo, hi, edge, worst) = quality(inr, outr);
+            println!(
+                "  {inr:>6} -> {outr:>6}: passband {lo:+.3}..{hi:+.3} dB, \
+                 gain at 20 kHz-equiv {edge:+.2} dB, stopband/spurious {worst:.1} dB"
+            );
+        }
+    }
 }
