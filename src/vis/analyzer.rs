@@ -132,7 +132,7 @@ pub struct HistoryView<'a> {
 impl<'a> HistoryView<'a> {
     /// Contiguous rows of `bands` values each, newest first.
     pub fn from_rows(rows: &'a [f32], bands: usize) -> Self {
-        let len = if bands == 0 { 0 } else { rows.len() / bands };
+        let len = rows.len().checked_div(bands).unwrap_or(0);
         Self {
             data: rows,
             bands,
@@ -585,7 +585,9 @@ mod tests {
                     if i > 0 {
                         let prev = &a.map[i - 1];
                         assert!((b.lo_hz - prev.hi_hz).abs() < 1e-2, "gap before {i}");
-                        assert!(b.center > prev.center, "centres not monotonic at {i}");
+                        assert!(b.lo_hz > prev.lo_hz, "edges not monotonic at {i}");
+                        // Sub-bin bands below bin 1 share the clamped centre.
+                        assert!(b.center >= prev.center, "centres not monotonic at {i}");
                         assert!(b.start >= prev.start);
                     }
                 }
