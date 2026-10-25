@@ -96,6 +96,7 @@ impl Converter {
         let out_ch = self.out.channels;
         match self.resampler.as_mut() {
             None => remix(data, in_ch, out_ch, dst),
+            Some(r) if in_ch == out_ch => r.process(data, dst),
             // Resample at the smaller channel count.
             Some(r) if in_ch < out_ch => {
                 self.mixed.clear();
@@ -113,14 +114,14 @@ impl Converter {
     fn finish(&mut self, dst: &mut Vec<f32>) {
         let in_ch = self.input.1.max(1);
         let out_ch = self.out.channels;
-        if let Some(r) = self.resampler.as_mut() {
-            self.mixed.clear();
-            r.finish(&mut self.mixed);
-            if in_ch < out_ch {
+        match self.resampler.as_mut() {
+            Some(r) if in_ch < out_ch => {
+                self.mixed.clear();
+                r.finish(&mut self.mixed);
                 remix(&self.mixed, in_ch, out_ch, dst);
-            } else {
-                dst.extend_from_slice(&self.mixed);
             }
+            Some(r) => r.finish(dst),
+            None => {}
         }
     }
 
@@ -708,5 +709,134 @@ pub(crate) mod tests {
         assert_eq!(dst.len(), 2 * 48_000);
         // Steady state is unity gain on both channels.
         assert!(dst[2_000..90_000].iter().all(|s| (s - 0.25).abs() < 1e-3));
+    }
+
+    /// Decodes `bytes` once, returning the native chunks and their spec.
+    fn decode_chunks(bytes: &[u8], ext: &str) -> (Vec<Vec<f32>>, (u32, usize)) {
+        let src = Box::new(io::Cursor::new(bytes.to_vec()));
+        let (mut n, _) = Native::open(src, Some(ext), None).unwrap();
+        let mut chunks = Vec::new();
+        loop {
+            let mut c = Vec::new();
+            if !n.next_chunk(&mut c).unwrap() {
+                break;
+            }
+            chunks.push(c);
+        }
+        (chunks, n.spec())
+    }
+
+    /// Best of five runs of `f`, which returns the frames it produced.
+    fn best_of(mut f: impl FnMut() -> usize) -> (std::time::Duration, usize) {
+        let mut best = std::time::Duration::MAX;
+        let mut frames = 0;
+        for _ in 0..5 {
+            let t = std::time::Instant::now();
+            frames = std::hint::black_box(f());
+            best = best.min(t.elapsed());
+        }
+        (best, frames)
+    }
+
+    fn bench_one(name: &str, bytes: &[u8], ext: &str) {
+        let (chunks, spec) = decode_chunks(bytes, ext);
+        let native_frames: usize = chunks.iter().map(|c| c.len() / spec.1).sum();
+        let secs = native_frames as f64 / f64::from(spec.0);
+        println!(
+            "bench {name}: {secs:.1} s at {} Hz, {} ch, {} chunks",
+            spec.0,
+            spec.1,
+            chunks.len()
+        );
+        let report = |what: &str, (t, frames): (std::time::Duration, usize)| {
+            println!(
+                "  {what:<34} {:>8.1} ms {:>8.1} ns/out-frame {:>7.3} % of a core",
+                t.as_secs_f64() * 1e3,
+                t.as_secs_f64() * 1e9 / frames.max(1) as f64,
+                100.0 * t.as_secs_f64() / secs
+            );
+        };
+        let decode = |convert: Option<OutFormat>| {
+            let copy = bytes.to_vec();
+            move || {
+                let src = Box::new(io::Cursor::new(copy.clone()));
+                let (mut n, _) = Native::open(src, Some(ext), None).unwrap();
+                let mut native = Vec::with_capacity(1 << 14);
+                let mut converted = Vec::with_capacity(1 << 14);
+                let mut conv = convert.map(|o| Converter::new(n.spec(), o));
+                let mut frames = 0;
+                loop {
+                    native.clear();
+                    converted.clear();
+                    let more = n.next_chunk(&mut native).unwrap();
+                    let stale = more && conv.as_ref().is_some_and(|c| c.input != n.spec());
+                    if let (true, Some(o)) = (stale, convert) {
+                        conv = Some(Converter::new(n.spec(), o));
+                    }
+                    match conv.as_mut() {
+                        Some(c) if more => c.convert(&native, &mut converted),
+                        Some(c) => c.finish(&mut converted),
+                        None => converted.extend_from_slice(&native),
+                    }
+                    frames += converted.len() / 2;
+                    let _ = std::hint::black_box(&converted);
+                    if !more {
+                        return frames;
+                    }
+                }
+            }
+        };
+        let chunks = &chunks;
+        let convert_only = |o: OutFormat| {
+            move || {
+                let mut conv = Converter::new(spec, o);
+                let mut converted = Vec::with_capacity(1 << 14);
+                let mut frames = 0;
+                for c in chunks {
+                    converted.clear();
+                    conv.convert(c, &mut converted);
+                    frames += converted.len() / o.channels;
+                    let _ = std::hint::black_box(&converted);
+                }
+                frames
+            }
+        };
+        let out48 = OutFormat {
+            rate: 48_000,
+            channels: 2,
+        };
+        let native_out = OutFormat {
+            rate: spec.0,
+            channels: 2,
+        };
+        report("decode only", best_of(decode(None)));
+        report(
+            "decode + convert to 48 kHz stereo",
+            best_of(decode(Some(out48))),
+        );
+        report(
+            "decode + convert, rates match",
+            best_of(decode(Some(native_out))),
+        );
+        report(
+            "convert only to 48 kHz stereo",
+            best_of(convert_only(out48)),
+        );
+        report(
+            "convert only, rates match",
+            best_of(convert_only(native_out)),
+        );
+    }
+
+    /// Decoder-path throughput: decode only, decode + remix/resample to a
+    /// 48 kHz device, and the conversion alone. Set `RUSTUNE_BENCH_MP3` to an
+    /// MP3 to include it; a generated WAV is always measured.
+    #[test]
+    #[ignore = "benchmark: cargo test --release -- --ignored --nocapture bench_"]
+    fn bench_decode_path() {
+        if let Ok(path) = std::env::var("RUSTUNE_BENCH_MP3") {
+            bench_one("mp3", &std::fs::read(&path).unwrap(), "mp3");
+        }
+        bench_one("wav", &wav_bytes(44_100, 2, 44_100 * 60, 440.0), "wav");
     }
 }

@@ -71,6 +71,63 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           cat "$GITHUB_STEP_SUMMARY"
 
+  bench:
+    name: decoder bench (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev lame
+      - if: runner.os == 'macOS'
+        run: brew install lame
+      - uses: Swatinem/rust-cache@v2
+      - name: Encode a 60 s 192 kbps 44.1 kHz stereo MP3
+        shell: bash
+        run: |
+          python3 - "$RUNNER_TEMP/bench.wav" <<'EOF'
+          import array, math, random, sys, wave
+          rate, secs = 44100, 60
+          random.seed(1)
+          # A chord with harmonics, slow tremolo and a little noise: enough
+          # spectral content to keep the MP3 encoder busy like real music.
+          notes = [110.0, 220.0, 277.18, 329.63, 440.0, 659.25, 880.0, 1760.0, 3520.0, 7040.0]
+          step = [2 * math.pi * f / rate for f in notes]
+          amp = [0.18 / (1 + i) for i in range(len(notes))]
+          pcm = array.array("h")
+          for n in range(rate * secs):
+              trem = 0.75 + 0.25 * math.sin(2 * math.pi * 0.5 * n / rate)
+              s = sum(a * math.sin(w * n) for a, w in zip(amp, step))
+              left = trem * s + 0.02 * (random.random() - 0.5)
+              right = trem * s * 0.9 + 0.02 * (random.random() - 0.5)
+              pcm.append(int(max(-1.0, min(1.0, left)) * 32767))
+              pcm.append(int(max(-1.0, min(1.0, right)) * 32767))
+          with wave.open(sys.argv[1], "wb") as w:
+              w.setnchannels(2)
+              w.setsampwidth(2)
+              w.setframerate(rate)
+              w.writeframes(pcm.tobytes())
+          EOF
+          lame --quiet -b 192 "$RUNNER_TEMP/bench.wav" "$RUNNER_TEMP/bench.mp3"
+          ls -l "$RUNNER_TEMP/bench.mp3"
+      - name: Decoder path throughput and resampler quality
+        shell: bash
+        env:
+          RUSTUNE_BENCH_MP3: ${{ runner.temp }}/bench.mp3
+        run: |
+          set -o pipefail
+          cargo test --release --locked -- --ignored --nocapture --test-threads=1 bench_ | tee bench.txt
+          {
+            echo "### ${{ runner.os }} decoder bench"
+            echo '```'
+            grep -E '^(bench|  )' bench.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   smoke:
     name: smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
