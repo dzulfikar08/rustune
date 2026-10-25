@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.10.0.schema.json
+
+PackageIdentifier: dzulfikar08.rustune
+PackageVersion: 0.3.6
+PackageLocale: en-US
+Publisher: dzulfikar08
+PublisherUrl: https://github.com/dzulfikar08
+PublisherSupportUrl: https://github.com/dzulfikar08/rustune/issues
+Author: Dzulfikar Ats Tsauri
+PackageName: rustune
+PackageUrl: https://rustune.dzulfikar.com
+License: MIT
+LicenseUrl: https://github.com/dzulfikar08/rustune/blob/master/LICENSE
+ShortDescription: A terminal music player with online audio search, local playback, and Winamp skin support
+Description: |-
+  A lightweight terminal music player: native Rust audio engine, visualizer, synced lyrics, Internet radio, podcasts, Subsonic and Jellyfin, and pixel-accurate Winamp skins, all in your terminal.
+  Online search and streaming use yt-dlp (winget install yt-dlp.yt-dlp); ffmpeg adds exotic formats and HLS streams.
+Moniker: rustune
+Tags:
+- audio
+- music
+- player
+- terminal
+- tui
+- winamp
+ReleaseNotesUrl: https://github.com/dzulfikar08/rustune/releases/tag/v0.3.6
+ManifestType: defaultLocale
+ManifestVersion: 1.10.0

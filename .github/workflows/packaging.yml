@@ -1,0 +1,173 @@
+name: Packaging
+
+# Checks the packaging files that release.yml does not exercise: install.sh
+# against the published release, the crate, the Nix flake, the AUR PKGBUILDs
+# and the winget manifests. (The snap has its own workflow, snap.yml; the
+# .deb/.rpm and archives are built and installed by release.yml.)
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "install.sh"
+      - "flake.nix"
+      - "flake.lock"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "packaging/**"
+      - ".github/workflows/packaging.yml"
+  pull_request:
+    paths:
+      - "install.sh"
+      - "flake.nix"
+      - "flake.lock"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "packaging/**"
+      - ".github/workflows/packaging.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: packaging-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  install-sh:
+    name: install.sh (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - if: runner.os == 'Linux'
+        run: shellcheck install.sh
+      - name: Install the published release
+        run: |
+          set -x
+          RUSTUNE_INSTALL_DIR="$RUNNER_TEMP/latest" sh install.sh
+          "$RUNNER_TEMP/latest/rustune" --version
+          RUSTUNE_VERSION=v0.3.6 RUSTUNE_INSTALL_DIR="$RUNNER_TEMP/pinned" sh install.sh
+          test "$("$RUNNER_TEMP/pinned/rustune" --version)" = "rustune 0.3.6"
+      - name: Install from a mock release folder
+        run: |
+          set -x
+          os=linux; [ "$(uname -s)" = Darwin ] && os=macos
+          arch=$(uname -m); [ "$arch" = arm64 ] && arch=aarch64
+          asset="rustune-$arch-$os"
+          mkdir -p mock bad
+          cp "$RUNNER_TEMP/pinned/rustune" "mock/$asset"
+          cp "$RUNNER_TEMP/pinned/rustune" "bad/$asset"
+          (cd mock && shasum -a 256 "$asset" > SHA256SUMS)
+          echo "0000000000000000000000000000000000000000000000000000000000000000  $asset" > bad/SHA256SUMS
+
+          RUSTUNE_BASE_URL="file://$PWD/mock" RUSTUNE_INSTALL_DIR="$RUNNER_TEMP/mock" sh install.sh
+          "$RUNNER_TEMP/mock/rustune" --version
+
+          if RUSTUNE_BASE_URL="file://$PWD/bad" RUSTUNE_INSTALL_DIR="$RUNNER_TEMP/bad" sh install.sh; then
+            echo "::error::install.sh accepted a wrong checksum"
+            exit 1
+          fi
+          test ! -e "$RUNNER_TEMP/bad/rustune"
+
+  crate:
+    name: cargo publish --dry-run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: Crate contents
+        run: |
+          cargo package --list --locked | tee files.txt
+          if grep -vE '^(src/.+\.rs|Cargo\.toml|Cargo\.toml\.orig|Cargo\.lock|README\.md|LICENSE|\.cargo_vcs_info\.json)$' files.txt; then
+            echo "::error::unexpected files in the crate (see the include list in Cargo.toml)"
+            exit 1
+          fi
+      - run: cargo publish --dry-run --locked
+
+  nix:
+    name: nix (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - name: Bootstrap flake.lock
+        run: nix flake lock && git add flake.lock
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flake-lock-${{ matrix.os }}
+          path: flake.lock
+      - name: nix build
+        run: nix build -L --no-update-lock-file
+      - name: nix run
+        run: |
+          out=$(nix run --no-update-lock-file . -- --version)
+          echo "$out"
+          test "$out" = "rustune $(nix eval --raw .#default.version)"
+          nix run --no-update-lock-file . -- --help | grep -q USAGE
+          nix flake check --no-update-lock-file --no-build
+
+  aur:
+    name: AUR ${{ matrix.pkg }}
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pkg: [rustune-bin, rustune]
+    steps:
+      - run: pacman -Syu --noconfirm --needed base-devel git namcap sudo
+      - uses: actions/checkout@v4
+      - name: Build user
+        run: |
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+          cp -r packaging/aur/${{ matrix.pkg }} /home/builder/pkg
+          chown -R builder:builder /home/builder/pkg
+      - name: .SRCINFO matches the PKGBUILD
+        run: su builder -c 'cd ~/pkg && makepkg --printsrcinfo > ~/srcinfo && diff -u .SRCINFO ~/srcinfo'
+      - name: namcap PKGBUILD
+        run: su builder -c 'cd ~/pkg && namcap PKGBUILD'
+      - name: makepkg -si
+        run: su builder -c 'cd ~/pkg && makepkg -si --noconfirm'
+      - name: namcap package
+        run: su builder -c 'cd ~/pkg && namcap ./*.pkg.tar.zst'
+      - name: Run rustune
+        run: |
+          version=$(sed -n 's/^pkgver=//p' packaging/aur/${{ matrix.pkg }}/PKGBUILD)
+          out=$(rustune --version)
+          echo "$out"
+          test "$out" = "rustune $version"
+          rustune --help | grep -q USAGE
+          pacman -Qi ${{ matrix.pkg }}
+
+  winget:
+    name: winget manifests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: winget validate
+        run: |
+          winget --version
+          Get-ChildItem -Directory packaging/winget/manifests/d/dzulfikar08/rustune | ForEach-Object {
+            winget validate --manifest $_.FullName
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+      - name: Install from the manifest
+        run: |
+          $dir = Get-ChildItem -Directory packaging/winget/manifests/d/dzulfikar08/rustune | Sort-Object { [version]$_.Name } | Select-Object -Last 1
+          winget settings --enable LocalManifestFiles
+          winget install --manifest $dir.FullName --accept-source-agreements --accept-package-agreements --disable-interactivity
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $out = & "$env:LOCALAPPDATA\Microsoft\WinGet\Links\rustune.exe" --version
+          Write-Output $out
+          if ($out -ne "rustune $($dir.Name)") { exit 1 }

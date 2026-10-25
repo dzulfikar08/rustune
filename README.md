@@ -43,37 +43,48 @@ Both skins come from the [Winamp Skin Museum](https://skins.webamp.org/) and are
 
 ## Installation
 
-### One-liner (macOS / Linux)
+| Platform | Channel | Command |
+|----------|---------|---------|
+| macOS, Linux | install script | `curl -fsSL https://raw.githubusercontent.com/dzulfikar08/rustune/master/install.sh \| sh` |
+| macOS, Linux | [Homebrew](https://github.com/dzulfikar08/homebrew-tap) | `brew install dzulfikar08/tap/rustune` |
+| Windows | [Scoop](https://github.com/dzulfikar08/scoop-bucket) | `scoop bucket add rustune https://github.com/dzulfikar08/scoop-bucket` then `scoop install rustune` |
+| Debian, Ubuntu | `.deb` from [Releases](https://github.com/dzulfikar08/rustune/releases) | `sudo apt install ./rustune_*_amd64.deb` (or `_arm64.deb`) |
+| Fedora, RHEL, openSUSE | `.rpm` from [Releases](https://github.com/dzulfikar08/rustune/releases) | `sudo dnf install ./rustune-*.x86_64.rpm` (or `.aarch64.rpm`) |
+| NixOS, any Nix | flake | `nix run github:dzulfikar08/rustune` or `nix profile install github:dzulfikar08/rustune` |
+| any | [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) | `cargo binstall --git https://github.com/dzulfikar08/rustune rustune` |
+| any | from source | `cargo install --git https://github.com/dzulfikar08/rustune` |
+| Arch Linux | AUR (coming soon) | `yay -S rustune-bin` or `yay -S rustune` |
+| Linux | Snap Store (coming soon) | `sudo snap install rustune` |
+| any | crates.io (coming soon) | `cargo install rustune` or `cargo binstall rustune` |
+| Windows | winget (coming soon) | `winget install dzulfikar08.rustune` |
+
+The Linux builds need glibc and the ALSA library at runtime (`libasound2`, called `alsa-lib` on Fedora and Arch); the packages pull it in. Online search and streaming need [yt-dlp](https://github.com/yt-dlp/yt-dlp), and [ffmpeg](https://ffmpeg.org/) adds exotic formats and HLS streams: install both with your package manager (`brew install yt-dlp ffmpeg`, `scoop install yt-dlp ffmpeg`, `sudo apt install yt-dlp ffmpeg`). Run `rustune doctor` to check.
+
+### Install script
+
+`install.sh` picks the release binary for your OS and CPU, checks it against the release's SHA256 checksums and installs it to `~/.local/bin`. It honours `RUSTUNE_INSTALL_DIR` (install folder) and `RUSTUNE_VERSION` (a release tag such as `v0.3.6`), and warns when the folder is not on your `PATH`:
 
 ```bash
-curl -sL https://github.com/dzulfikar08/rustune/releases/latest/download/rustune-$(uname -m)-macos -o /usr/local/bin/rustune && chmod +x /usr/local/bin/rustune
+export PATH="$HOME/.local/bin:$PATH"
 ```
-
-> On Linux, replace `macos` with `linux` in the URL.
 
 ### From Release
 
-Download the latest binary for your platform from the [Releases](https://github.com/dzulfikar08/rustune/releases) page.
+Every [release](https://github.com/dzulfikar08/rustune/releases) has:
 
-**macOS users**: Download the `.dmg` for a signed & notarized app experience, or the bare binary if you prefer the terminal-only approach.
+- bare binaries: `rustune-aarch64-macos`, `rustune-x86_64-macos`, `rustune-x86_64-linux`, `rustune-aarch64-linux`, `rustune-x86_64-windows.exe`
+- archives with the binary, README and LICENSE: `rustune-<version>-<target>.tar.gz` (`.zip` for Windows)
+- `.deb` and `.rpm` packages for x86_64 and arm64 Linux
+- signed and notarized macOS apps: `rustune-aarch64-macos.dmg`, `rustune-x86_64-macos.dmg`
+- `SHA256SUMS` for all of the above (`sha256sum -c SHA256SUMS --ignore-missing`)
 
-#### Installing the bare binary
+To install a bare binary by hand:
 
 ```bash
 mkdir -p ~/.local/bin
 cp ~/Downloads/rustune-aarch64-macos ~/.local/bin/rustune
 chmod +x ~/.local/bin/rustune
 ```
-
-> On Linux, the file is `rustune-x86_64-linux`. On Intel Macs, use `rustune-x86_64-macos`.
-
-Then add `~/.local/bin` to your PATH (if not already) in `~/.zshrc`:
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-After that, just run `rustune` from anywhere.
 
 ### Requirements
 

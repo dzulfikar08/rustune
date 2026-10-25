@@ -5,3 +5,5 @@
 *.swo
 *~
 .env
+/result
+*.snap

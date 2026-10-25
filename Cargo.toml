@@ -8,6 +8,57 @@ homepage = "https://rustune.dzulfikar.com"
 license = "MIT"
 keywords = ["music", "player", "terminal", "tui", "audio"]
 categories = ["command-line-utilities", "multimedia::audio"]
+readme = "README.md"
+# Keep the published crate to what builds and tests it (README.md is read by
+# a test); screenshots, icons, docs and packaging files stay out.
+include = ["/src/**/*.rs", "/Cargo.toml", "/Cargo.lock", "/README.md", "/LICENSE"]
+
+# cargo-binstall: the release archives (`rustune-<version>-<target>.tar.gz`,
+# `.zip` on Windows) hold the binary in a `rustune-<version>-<target>/` folder.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ version }-{ target }{ archive-suffix }"
+bin-dir = "{ name }-{ version }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
+# `cargo deb --no-build --target <triple>` in the release workflow. Depends
+# are spelled out instead of `$auto` so one .deb fits both Debian 12
+# (libasound2) and Ubuntu 24.04+ / Debian 13 (libasound2t64).
+[package.metadata.deb]
+maintainer = "Dzulfikar Ats Tsauri <dzulfikar.at@gmail.com>"
+copyright = "2026, dzulfikar08"
+license-file = ["LICENSE", "0"]
+section = "sound"
+priority = "optional"
+depends = "libc6 (>= 2.34), libasound2 (>= 1.0.16) | libasound2t64"
+recommends = "yt-dlp, ffmpeg"
+extended-description = """\
+A lightweight terminal music player: native Rust audio engine, visualizer, \
+synced lyrics, Internet radio, podcasts, Subsonic and Jellyfin, and \
+pixel-accurate Winamp skins. Online search and streaming use yt-dlp; ffmpeg \
+adds exotic formats and HLS streams."""
+assets = [
+    ["target/release/rustune", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/rustune/README.md", "644"],
+]
+
+# `cargo generate-rpm --target <triple>` in the release workflow.
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/rustune", dest = "/usr/bin/rustune", mode = "755" },
+    { source = "README.md", dest = "/usr/share/doc/rustune/README.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/licenses/rustune/LICENSE", mode = "644", doc = true },
+]
+
+[package.metadata.generate-rpm.requires]
+alsa-lib = "*"
+
+# File dependencies: Fedora ships ffmpeg as ffmpeg-free, RPM Fusion as ffmpeg.
+[package.metadata.generate-rpm.recommends]
+"/usr/bin/yt-dlp" = "*"
+"/usr/bin/ffmpeg" = "*"
 
 [dependencies]
 ratatui = "0.29"

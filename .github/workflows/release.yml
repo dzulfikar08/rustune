@@ -3,14 +3,35 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  # Dry run: build, sign, notarize and collect every release file without
-  # publishing a release (`gh workflow run release.yml --ref <branch>`).
+  # Dry run: build, sign, notarize, package, verify and collect every release
+  # file without publishing anything (`gh workflow run release.yml --ref <branch>`).
   workflow_dispatch:
 
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
+  meta:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Read the version from Cargo.toml
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "rustune") | .version')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "rustune $version"
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+            exit 1
+          fi
+
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -34,6 +55,10 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact: rustune-x86_64-linux
             dmg_artifact: ""
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact: rustune-aarch64-linux
+            dmg_artifact: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -42,21 +67,57 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Install Linux dependencies
-        if: matrix.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
       # --- Linux / Windows: the bare binary is the release file ---
       - name: Stage binary (Linux / Windows)
-        if: matrix.os != 'macos-latest'
+        if: runner.os != 'macOS'
         shell: bash
         run: |
           src=target/${{ matrix.target }}/release/rustune
           if [ "$RUNNER_OS" = Windows ]; then src="$src.exe"; fi
           cp "$src" ${{ matrix.artifact }}
           chmod +x ${{ matrix.artifact }}
+
+      # The .deb declares `libc6 (>= 2.34)`; fail if the binary needs more.
+      - name: Check the glibc requirement (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          need=$(objdump -T ${{ matrix.artifact }} | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -n1)
+          echo "highest glibc symbol version: $need"
+          if [ "$(printf '%s\n' "$need" 2.34 | sort -V | tail -n1)" != 2.34 ]; then
+            echo "::error::binary needs glibc $need; raise libc6 in [package.metadata.deb] depends"
+            exit 1
+          fi
+
+      # --- Linux: .deb and .rpm from the binary built above ---
+      - name: Install cargo-deb and cargo-generate-rpm
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb,cargo-generate-rpm
+
+      - name: Build .deb and .rpm (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist
+          cargo deb --no-build --no-strip --target ${{ matrix.target }} --output dist/
+          cargo generate-rpm --target ${{ matrix.target }} --output dist/
+          ls -l dist
+          dpkg-deb --info dist/*.deb
+          dpkg-deb --contents dist/*.deb
+
+      - name: Upload .deb and .rpm (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustune-packages-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
 
       # --- macOS setup ---
       - name: Import Apple certificate
@@ -240,29 +301,236 @@ jobs:
           overwrite: true
           if-no-files-found: error
 
-  release:
-    name: Create Release
-    needs: [build, notarize]
-    if: always() && needs.build.result == 'success' && needs.notarize.result == 'success'
+  # Per-target archives for cargo-binstall and manual installs:
+  # rustune-<version>-<target>.tar.gz (.zip on Windows) holding
+  # rustune-<version>-<target>/{rustune, README.md, LICENSE}. Built from the
+  # notarized macOS binaries.
+  archive:
+    name: Archives
+    needs: [meta, build, notarize]
     runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
     steps:
-      # All artifacts land side by side in artifacts/ (one file each).
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
+          pattern: rustune-*
+          path: bin
+          merge-multiple: true
+      - name: Pack
+        run: |
+          mkdir -p stage out
+          pack() { # asset target
+            dir="rustune-$VERSION-$2"
+            exe=""
+            case $2 in *windows*) exe=.exe ;; esac
+            mkdir -p "stage/$dir"
+            install -m 755 "bin/$1" "stage/$dir/rustune$exe"
+            install -m 644 README.md LICENSE "stage/$dir/"
+            if [ -n "$exe" ]; then
+              (cd stage && zip -9 -r -X "../out/$dir.zip" "$dir")
+            else
+              tar -C stage --owner=0 --group=0 --numeric-owner -czf "out/$dir.tar.gz" "$dir"
+            fi
+          }
+          pack rustune-aarch64-macos aarch64-apple-darwin
+          pack rustune-x86_64-macos x86_64-apple-darwin
+          pack rustune-x86_64-linux x86_64-unknown-linux-gnu
+          pack rustune-aarch64-linux aarch64-unknown-linux-gnu
+          pack rustune-x86_64-windows.exe x86_64-pc-windows-msvc
+          ls -l out
+      # The archives must match [package.metadata.binstall] in Cargo.toml.
+      - name: Check the cargo-binstall layout
+        run: |
+          meta=$(cargo metadata --no-deps --format-version 1 | jq '.packages[] | select(.name == "rustune") | .metadata.binstall')
+          for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu \
+                        aarch64-unknown-linux-gnu x86_64-pc-windows-msvc; do
+            ext="" suffix=.tar.gz
+            case $target in *windows*) ext=.exe suffix=.zip ;; esac
+            render() {
+              sed -e "s/{ name }/rustune/g; s/{ version }/$VERSION/g; s/{ target }/$target/g" \
+                  -e "s/{ bin }/rustune/g; s/{ binary-ext }/$ext/g; s/{ archive-suffix }/$suffix/g" \
+                  -e 's/{ repo }/https:\/\/github.com\/dzulfikar08\/rustune/g'
+            }
+            url=$(jq -r '."pkg-url"' <<<"$meta" | render)
+            bin=$(jq -r '."bin-dir"' <<<"$meta" | render)
+            file=out/${url##*/}
+            test -s "$file" || { echo "::error::pkg-url $url has no archive"; exit 1; }
+            if [ "$suffix" = .zip ]; then list=$(unzip -Z1 "$file"); else list=$(tar -tzf "$file"); fi
+            grep -qx "$bin" <<<"$list" || { echo "::error::$file has no $bin"; exit 1; }
+            echo "ok: $url -> $bin"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rustune-archives
+          path: out/*
+          if-no-files-found: error
+
+  # Install the .deb / .rpm on clean distributions and run the binary.
+  verify-packages:
+    name: Install ${{ matrix.kind }} on ${{ matrix.image }} (${{ matrix.arch }})
+    needs: [meta, build]
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+        image: ["ubuntu:24.04", "debian:12", "fedora:latest"]
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - image: "ubuntu:24.04"
+            kind: deb
+          - image: "debian:12"
+            kind: deb
+          - image: "fedora:latest"
+            kind: rpm
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: rustune-packages-${{ matrix.target }}
+          path: pkg
+      - name: Install the .deb
+        if: matrix.kind == 'deb'
+        run: |
+          dpkg-deb --field pkg/*.deb Package Version Architecture Depends Recommends
+          apt-get update
+          apt-get install -y --no-install-recommends ./pkg/*.deb
+      - name: Install the .rpm
+        if: matrix.kind == 'rpm'
+        run: |
+          rpm -qp --requires --recommends pkg/*.rpm
+          dnf install -y ./pkg/*.rpm
+      - name: Run rustune
+        shell: bash
+        run: |
+          command -v rustune
+          out=$(rustune --version)
+          echo "$out"
+          test "$out" = "rustune $VERSION"
+          rustune --help | grep -q USAGE
+          test -s /usr/share/doc/rustune/README.md
+      - name: Uninstall
+        shell: bash
+        run: |
+          if [ "${{ matrix.kind }}" = deb ]; then apt-get remove -y rustune; else dnf remove -y rustune; fi
+          ! command -v rustune
+
+  checksums:
+    name: SHA256SUMS
+    needs: [meta, build, notarize, archive]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      # All release files land side by side in artifacts/.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rustune-*
+          path: artifacts
+          merge-multiple: true
+      - name: Check release files
+        run: |
+          ls -l artifacts
+          missing=0
+          for f in rustune-aarch64-macos rustune-aarch64-macos.dmg \
+                   rustune-x86_64-macos rustune-x86_64-macos.dmg \
+                   rustune-x86_64-linux rustune-aarch64-linux rustune-x86_64-windows.exe \
+                   rustune-$VERSION-aarch64-apple-darwin.tar.gz rustune-$VERSION-x86_64-apple-darwin.tar.gz \
+                   rustune-$VERSION-x86_64-unknown-linux-gnu.tar.gz rustune-$VERSION-aarch64-unknown-linux-gnu.tar.gz \
+                   rustune-$VERSION-x86_64-pc-windows-msvc.zip \
+                   rustune_${VERSION}-1_amd64.deb rustune_${VERSION}-1_arm64.deb \
+                   rustune-${VERSION}-1.x86_64.rpm rustune-${VERSION}-1.aarch64.rpm; do
+            test -s "artifacts/$f" || { echo "::error::missing release file $f"; missing=1; }
+          done
+          exit $missing
+      - name: Write SHA256SUMS
+        working-directory: artifacts
+        run: |
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rustune-SHA256SUMS
+          path: artifacts/SHA256SUMS
+          if-no-files-found: error
+
+  # install.sh against the release files served over HTTP.
+  verify-install:
+    name: install.sh (${{ matrix.os }})
+    needs: [meta, checksums]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rustune-*
+          path: rel
+          merge-multiple: true
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2t64 dash
+      - name: Install from the release files
+        run: |
+          set -x
+          # The same files with every checksum zeroed: install.sh must refuse them.
+          cp -R rel bad
+          sed -E -i.orig 's/^[0-9a-f]{64}/0000000000000000000000000000000000000000000000000000000000000000/' bad/SHA256SUMS
+          python3 -m http.server 8765 --bind 127.0.0.1 --directory rel >/dev/null 2>&1 &
+          python3 -m http.server 8766 --bind 127.0.0.1 --directory bad >/dev/null 2>&1 &
+          for _ in 1 2 3 4 5 6 7 8 9 10; do curl -fsS -o /dev/null http://127.0.0.1:8766/SHA256SUMS && break; sleep 1; done
+
+          shells="sh"
+          if command -v dash >/dev/null; then shells="sh dash"; fi
+          for shell in $shells; do
+            dir="$RUNNER_TEMP/$shell/bin"
+            RUSTUNE_BASE_URL=http://127.0.0.1:8765 RUSTUNE_INSTALL_DIR="$dir" $shell install.sh
+            test "$("$dir/rustune" --version)" = "rustune $VERSION"
+          done
+
+          if RUSTUNE_BASE_URL=http://127.0.0.1:8766 RUSTUNE_INSTALL_DIR="$RUNNER_TEMP/bad/bin" sh install.sh; then
+            echo "::error::install.sh accepted a binary with a wrong checksum"
+            exit 1
+          fi
+          test ! -e "$RUNNER_TEMP/bad/bin/rustune"
+
+  snap:
+    name: Snap
+    uses: ./.github/workflows/snap.yml
+
+  release:
+    name: Create Release
+    needs: [checksums, verify-packages, verify-install, snap]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rustune-*
           path: artifacts
           merge-multiple: true
 
       - name: Ensure binaries are executable
-        run: find artifacts -type f ! -name '*.exe' ! -name '*.dmg' ! -name '*.zip' -exec chmod +x {} +
+        run: find artifacts -type f -name 'rustune-*-*' ! -name '*.*' -exec chmod +x {} +
 
-      - name: Check release files
+      - name: Verify checksums
+        working-directory: artifacts
         run: |
-          ls -l artifacts
-          for f in rustune-aarch64-macos rustune-aarch64-macos.dmg \
-                   rustune-x86_64-macos rustune-x86_64-macos.dmg \
-                   rustune-x86_64-linux rustune-x86_64-windows.exe; do
-            test -s "artifacts/$f" || { echo "::error::missing release file $f"; exit 1; }
-          done
+          ls -l
+          sha256sum -c SHA256SUMS
+          test "$(ls | wc -l)" -eq "$(($(wc -l < SHA256SUMS) + 1))"
 
       - name: Create release
         if: github.event_name == 'push'
@@ -270,3 +538,108 @@ jobs:
         with:
           files: artifacts/*
           generate_release_notes: true
+
+  # --- Optional channels: each job only publishes when its secret exists ---
+  # (see packaging/README.md for the one-time setup).
+
+  publish-aur:
+    name: Publish AUR ${{ matrix.pkg }}
+    needs: [meta, release]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pkg: [rustune-bin, rustune]
+    env:
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+      VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - if: env.AUR_SSH_PRIVATE_KEY == ''
+        run: echo "::notice::AUR_SSH_PRIVATE_KEY is not set; skipping the AUR"
+      - if: env.AUR_SSH_PRIVATE_KEY != ''
+        uses: actions/checkout@v4
+      - name: Bump pkgver
+        if: env.AUR_SSH_PRIVATE_KEY != ''
+        run: sed -i -e "s/^pkgver=.*/pkgver=$VERSION/" -e 's/^pkgrel=.*/pkgrel=1/' packaging/aur/${{ matrix.pkg }}/PKGBUILD
+      # updpkgsums downloads the new sources and rewrites the checksums;
+      # the action regenerates .SRCINFO.
+      - if: env.AUR_SSH_PRIVATE_KEY != ''
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.1
+        with:
+          pkgname: ${{ matrix.pkg }}
+          pkgbuild: packaging/aur/${{ matrix.pkg }}/PKGBUILD
+          updpkgsums: true
+          commit_username: dzulfikar08
+          commit_email: 99225357+dzulfikar08@users.noreply.github.com
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: Update to ${{ needs.meta.outputs.version }}
+
+  publish-snap:
+    name: Publish snap (${{ matrix.arch }})
+    needs: release
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    env:
+      SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+    steps:
+      - if: env.SNAPCRAFT_STORE_CREDENTIALS == ''
+        run: echo "::notice::SNAPCRAFT_STORE_CREDENTIALS is not set; skipping the Snap Store"
+      - if: env.SNAPCRAFT_STORE_CREDENTIALS != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: snap-${{ matrix.arch }}
+          path: snap-out
+      - id: file
+        if: env.SNAPCRAFT_STORE_CREDENTIALS != ''
+        run: echo "snap=$(ls snap-out/*.snap)" >> "$GITHUB_OUTPUT"
+      - if: env.SNAPCRAFT_STORE_CREDENTIALS != ''
+        uses: snapcore/action-publish@v1
+        with:
+          snap: ${{ steps.file.outputs.snap }}
+          release: stable
+
+  publish-crate:
+    name: Publish crates.io
+    needs: release
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - if: env.CARGO_REGISTRY_TOKEN == ''
+        run: echo "::notice::CARGO_REGISTRY_TOKEN is not set; skipping crates.io"
+      - if: env.CARGO_REGISTRY_TOKEN != ''
+        uses: actions/checkout@v4
+      - if: env.CARGO_REGISTRY_TOKEN != ''
+        uses: dtolnay/rust-toolchain@stable
+      - if: env.CARGO_REGISTRY_TOKEN != ''
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - if: env.CARGO_REGISTRY_TOKEN != ''
+        run: cargo publish --locked
+
+  # Needs the first version merged into microsoft/winget-pkgs by hand
+  # (packaging/README.md); later versions are submitted from here.
+  publish-winget:
+    name: Publish winget
+    needs: [meta, release]
+    if: github.event_name == 'push'
+    runs-on: windows-latest
+    env:
+      WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
+      VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - if: env.WINGET_GITHUB_TOKEN == ''
+        run: echo "::notice::WINGET_GITHUB_TOKEN is not set; skipping winget"
+      - if: env.WINGET_GITHUB_TOKEN != ''
+        run: |
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+          .\wingetcreate.exe update dzulfikar08.rustune `
+            --version $env:VERSION `
+            --urls "https://github.com/dzulfikar08/rustune/releases/download/v$env:VERSION/rustune-x86_64-windows.exe" `
+            --token $env:WINGET_GITHUB_TOKEN `
+            --submit

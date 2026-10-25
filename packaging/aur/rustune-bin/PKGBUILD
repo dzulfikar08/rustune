@@ -1,0 +1,31 @@
+# Maintainer: Dzulfikar Ats Tsauri <dzulfikar.at@gmail.com>
+#
+# The release workflow bumps pkgver and the checksums and pushes this file to
+# the AUR (see packaging/README.md). Releases before v0.3.7 have no aarch64
+# build, hence the SKIP below until then.
+
+pkgname=rustune-bin
+_pkgname=rustune
+pkgver=0.3.6
+pkgrel=1
+pkgdesc='Terminal music player with online search, radio, podcasts and Winamp skins'
+arch=('x86_64' 'aarch64')
+url='https://github.com/dzulfikar08/rustune'
+license=('MIT')
+depends=('alsa-lib' 'gcc-libs' 'glibc')
+optdepends=('yt-dlp: online search and streaming'
+            'ffmpeg: exotic formats and HLS streams')
+provides=("$_pkgname=$pkgver")
+conflicts=("$_pkgname")
+options=('!strip' '!debug')
+source=("LICENSE-$pkgver::https://raw.githubusercontent.com/dzulfikar08/rustune/v$pkgver/LICENSE")
+source_x86_64=("$_pkgname-$pkgver-x86_64::$url/releases/download/v$pkgver/rustune-x86_64-linux")
+source_aarch64=("$_pkgname-$pkgver-aarch64::$url/releases/download/v$pkgver/rustune-aarch64-linux")
+sha256sums=('b6e4148bb54de4e9dc421e6b75165445fbd2cbf9f3b495f720b5d1557c14423c')
+sha256sums_x86_64=('5668e4945d6bdf617cf580bfebf835b4fdd76bafb4580a4bf1509ee1c8afeae9')
+sha256sums_aarch64=('SKIP')
+
+package() {
+  install -Dm755 "$_pkgname-$pkgver-$CARCH" "$pkgdir/usr/bin/$_pkgname"
+  install -Dm644 "LICENSE-$pkgver" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
