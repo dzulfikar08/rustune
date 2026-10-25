@@ -13,6 +13,8 @@ mod net;
 mod playback;
 mod player;
 mod playlist_io;
+#[allow(dead_code)]
+mod providers;
 mod queue;
 // Owned by the skin/gfx workstream, which carries its own lint fixes.
 #[allow(dead_code, clippy::all)]
