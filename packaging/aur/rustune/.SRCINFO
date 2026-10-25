@@ -8,11 +8,12 @@ pkgbase = rustune
 	license = MIT
 	makedepends = cargo
 	depends = alsa-lib
-	depends = gcc-libs
 	depends = glibc
+	depends = libgcc
 	optdepends = yt-dlp: online search and streaming
 	optdepends = ffmpeg: exotic formats and HLS streams
 	options = !lto
+	options = !debug
 	source = rustune-0.3.6.tar.gz::https://github.com/dzulfikar08/rustune/archive/refs/tags/v0.3.6.tar.gz
 	sha256sums = f9d087ec2d72ab32455760d35a3340a02035d621a4128437ad60a1fcb7a44dfa
 

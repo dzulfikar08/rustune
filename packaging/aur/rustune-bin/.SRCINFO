@@ -7,8 +7,8 @@ pkgbase = rustune-bin
 	arch = aarch64
 	license = MIT
 	depends = alsa-lib
-	depends = gcc-libs
 	depends = glibc
+	depends = libgcc
 	optdepends = yt-dlp: online search and streaming
 	optdepends = ffmpeg: exotic formats and HLS streams
 	provides = rustune=0.3.6

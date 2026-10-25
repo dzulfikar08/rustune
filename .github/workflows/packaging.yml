@@ -129,12 +129,17 @@ jobs:
           chown -R builder:builder /home/builder/pkg
       - name: .SRCINFO matches the PKGBUILD
         run: su builder -c 'cd ~/pkg && makepkg --printsrcinfo > ~/srcinfo && diff -u .SRCINFO ~/srcinfo'
+      # namcap always exits 0: fail on errors (E:), show warnings.
       - name: namcap PKGBUILD
-        run: su builder -c 'cd ~/pkg && namcap PKGBUILD'
+        run: |
+          su builder -c 'cd ~/pkg && namcap PKGBUILD' | tee namcap.txt
+          ! grep -q ' E: ' namcap.txt
       - name: makepkg -si
         run: su builder -c 'cd ~/pkg && makepkg -si --noconfirm'
       - name: namcap package
-        run: su builder -c 'cd ~/pkg && namcap ./*.pkg.tar.zst'
+        run: |
+          su builder -c 'cd ~/pkg && namcap ./*.pkg.tar.zst' | tee namcap.txt
+          ! grep -q ' E: ' namcap.txt
       - name: Run rustune
         run: |
           version=$(sed -n 's/^pkgver=//p' packaging/aur/${{ matrix.pkg }}/PKGBUILD)

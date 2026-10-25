@@ -12,7 +12,7 @@ pkgdesc='Terminal music player with online search, radio, podcasts and Winamp sk
 arch=('x86_64' 'aarch64')
 url='https://github.com/dzulfikar08/rustune'
 license=('MIT')
-depends=('alsa-lib' 'gcc-libs' 'glibc')
+depends=('alsa-lib' 'glibc' 'libgcc')
 optdepends=('yt-dlp: online search and streaming'
             'ffmpeg: exotic formats and HLS streams')
 provides=("$_pkgname=$pkgver")

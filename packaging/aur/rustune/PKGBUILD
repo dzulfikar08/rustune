@@ -10,12 +10,12 @@ pkgdesc='Terminal music player with online search, radio, podcasts and Winamp sk
 arch=('x86_64' 'aarch64')
 url='https://github.com/dzulfikar08/rustune'
 license=('MIT')
-depends=('alsa-lib' 'gcc-libs' 'glibc')
+depends=('alsa-lib' 'glibc' 'libgcc')
 makedepends=('cargo')
 optdepends=('yt-dlp: online search and streaming'
             'ffmpeg: exotic formats and HLS streams')
-# The release profile already does fat LTO on the Rust side.
-options=('!lto')
+# The release profile already does fat LTO and strips the binary.
+options=('!lto' '!debug')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('f9d087ec2d72ab32455760d35a3340a02035d621a4128437ad60a1fcb7a44dfa')
 
