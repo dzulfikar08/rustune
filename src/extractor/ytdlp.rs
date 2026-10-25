@@ -47,6 +47,12 @@ fn parse_search_output(stdout: &str) -> Vec<MediaItem> {
         .collect()
 }
 
+/// yt-dlp format selector for playback. Prefers progressive HTTP AAC/MP3 that
+/// the built-in engine decodes and seeks natively (YouTube itag 140). YouTube's
+/// plain `bestaudio` is WebM/Opus, which would keep an ffmpeg process decoding
+/// for the whole track. HLS/Opus-only sources still fall through to `bestaudio`.
+const NATIVE_FIRST_FORMAT: &str = "bestaudio[ext=m4a][protocol^=http]/bestaudio[acodec^=mp4a][protocol^=http]/bestaudio[acodec=mp3][protocol^=http]/bestaudio[protocol^=http]/bestaudio/best";
+
 fn command() -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new("yt-dlp");
     cmd.stdin(Stdio::null()).kill_on_drop(true);
@@ -84,7 +90,7 @@ impl Extractor for YtdlpExtractor {
             let output = tokio::time::timeout(
                 self.timeout,
                 command()
-                    .args(["-f", "bestaudio/best", "--get-url", "--"])
+                    .args(["-f", NATIVE_FIRST_FORMAT, "--get-url", "--"])
                     .arg(&url)
                     .output(),
             )
