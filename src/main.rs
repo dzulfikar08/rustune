@@ -1,5 +1,7 @@
 mod app;
 #[allow(dead_code)]
+mod audio;
+#[allow(dead_code)]
 mod command;
 mod config;
 mod event;
