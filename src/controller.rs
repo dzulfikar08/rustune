@@ -62,6 +62,9 @@ struct Preload {
     id: String,
 }
 
+/// Called with the app state after changes (see `Controller::observers`).
+pub type Observer = Box<dyn FnMut(&App)>;
+
 pub struct Controller {
     pub app: App,
     playback: Playback,
@@ -99,7 +102,7 @@ pub struct Controller {
     screen_height: u16,
     /// Notified with the app state after every change (IPC status, OS media
     /// controls). Each observer diffs cheaply against what it last saw.
-    pub observers: Vec<Box<dyn FnMut(&App)>>,
+    pub observers: Vec<Observer>,
 }
 
 /// Parse a `:command` typed into the prompt into a player `Command`.

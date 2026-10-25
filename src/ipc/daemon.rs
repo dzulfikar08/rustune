@@ -44,7 +44,7 @@ async fn shutdown_signal() {
 
 /// Print player errors (bad files, no audio device) to stderr: the daemon
 /// has no screen to show them on.
-fn error_logger() -> Box<dyn FnMut(&App)> {
+fn error_logger() -> controller::Observer {
     let mut last = String::new();
     Box::new(move |app: &App| match &app.status {
         Status::Error(msg) if *msg != last => {
