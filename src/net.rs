@@ -421,7 +421,10 @@ mod tests {
             "errors": [{"message": "Combining `sort: MUSEUM` with `filter` is not supported."}],
             "data": {"skins": null}
         });
-        let err = parse_skin_list(&body, 0, 2, &[]).unwrap_err().to_string();
+        let err = parse_skin_list(&body, 0, 2, &[])
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("not supported"), "{err}");
         assert!(parse_skin_search(&json!({}), 0, 2, &[]).is_err());
     }

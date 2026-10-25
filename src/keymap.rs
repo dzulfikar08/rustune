@@ -1240,9 +1240,9 @@ mod tests {
             lookup(online, &ev(KeyCode::Enter, KeyModifiers::NONE)),
             Some(Action::Activate)
         );
-        let hints: Vec<_> = hints(online).collect();
-        assert_eq!(hints[0], ("Enter", "apply"));
-        assert!(hints.contains(&("f", "all/curated")));
+        let shown: Vec<_> = hints(online).collect();
+        assert_eq!(shown[0], ("Enter", "apply"));
+        assert!(shown.contains(&("f", "all/curated")));
         assert!(!hints(local).any(|(_, h)| h == "search"));
         assert_eq!(
             hint_for(Ctx::PROMPT, Action::Submit),
