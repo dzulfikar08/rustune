@@ -19,8 +19,7 @@ use tokio::time::Instant;
 
 use crate::app::{
     display_title, App, BrowseAction, InputAction, InputPurpose, LyricsStatus, Mode, MouseAction,
-    OnboardingAction, PlaybackState, SettingsAction, SkinBrowserAction, SkinBrowserSource,
-    SkinEntry, Status, Tab,
+    OnboardingAction, PlaybackState, SettingsAction, Status, Tab,
 };
 use crate::audio::{EngineEvent, Source, TrackInfo};
 use crate::browse::{self, BrowseOutcome, Services};
@@ -29,7 +28,7 @@ use crate::config::{self, Config};
 use crate::eq_presets;
 use crate::event::AppEvent;
 use crate::extractor::{self, ExtractorRegistry, YtdlpExtractor};
-use crate::gfx::GfxPainter;
+use crate::gfx::{GfxPainter, Protocol};
 use crate::install::{self, Dep, DepStatus};
 use crate::library;
 use crate::media::{MediaItem, SourceKind};
@@ -40,6 +39,10 @@ use crate::providers::lyrics::{LrclibClient, Lyrics, TrackQuery};
 use crate::providers::ProviderKind;
 use crate::report::{self, Call, Tracker};
 use crate::skin::WinampSkin;
+use crate::skin_browser::{
+    PreviewSource, SkinBrowserAction, SkinEntry, Source as SkinSource, PAGE_SIZE as SKIN_PAGE,
+};
+use crate::skin_cache::PreviewCache;
 use crate::state::{QueueEntry, SessionState};
 use crate::term_input::InputThread;
 use crate::theme::Theme;
@@ -52,7 +55,6 @@ use crate::winamp::WinampUiState;
 const SAVE_DELAY: Duration = Duration::from_secs(2);
 /// "Previous" restarts the current track when it has played longer than this.
 const PREV_RESTART_SECS: u64 = 3;
-const SKIN_PAGE: usize = 50;
 /// Clock resolution while synced lyrics are on screen.
 const LYRICS_TICK: Duration = Duration::from_millis(250);
 
@@ -94,6 +96,8 @@ pub struct Controller {
     save_at: Option<Instant>,
     saving: bool,
     pub winamp_ui: WinampUiState,
+    /// Compositor state of the skin browser's live preview.
+    pub preview_ui: ui::PreviewUi,
     pub gfx: GfxPainter,
     pacer: FramePacer,
     /// Last analyzer update.
@@ -276,6 +280,7 @@ impl Controller {
             save_at: None,
             saving: false,
             winamp_ui: WinampUiState::new(),
+            preview_ui: ui::PreviewUi::default(),
             gfx,
             pacer: FramePacer::default(),
             vis_at: Instant::now(),
@@ -373,17 +378,28 @@ impl Controller {
         });
     }
 
+    /// Restart the skin browser's list for its current source and search.
+    fn reload_skins(&mut self) {
+        self.app.skins.reset_list();
+        match self.app.skins.source {
+            SkinSource::Online => self.fetch_skins(0),
+            SkinSource::Local => self.list_local_skins(),
+        }
+    }
+
     fn fetch_skins(&mut self, offset: usize) {
         self.skin_fetch_token += 1;
         let token = self.skin_fetch_token;
-        let query = self.app.skin_search_query.trim().to_string();
-        self.app.skin_browser_loading = true;
-        self.app.skin_browser_error = None;
+        let skins = &mut self.app.skins;
+        let query = skins.query.clone();
+        let listing = skins.listing;
+        skins.loading = true;
+        skins.error = None;
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
             let dir = config::skins_dir();
             let page = if query.is_empty() {
-                net::fetch_skin_list(offset, SKIN_PAGE, &dir)
+                net::fetch_skin_list(listing, offset, SKIN_PAGE, &dir)
             } else {
                 net::search_skins(&query, offset, SKIN_PAGE, &dir)
             };
@@ -396,7 +412,9 @@ impl Controller {
     }
 
     fn list_local_skins(&mut self) {
-        self.app.skin_browser_loading = true;
+        self.skin_fetch_token += 1;
+        let token = self.skin_fetch_token;
+        self.app.skins.loading = true;
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
             let entries = net::list_skins(&config::skins_dir())
@@ -420,7 +438,40 @@ impl Controller {
                     }
                 })
                 .collect();
-            let _ = tx.send(AppEvent::LocalSkinsListed(entries));
+            let _ = tx.send(AppEvent::LocalSkinsListed { token, entries });
+        });
+    }
+
+    /// After the skin list or its cursor changed: fetch the next page when
+    /// the cursor nears the end and restart the preview countdown.
+    fn skin_browser_followups(&mut self) {
+        if self.app.mode != Mode::SkinBrowser {
+            return;
+        }
+        if self.app.skins.wants_more() {
+            self.fetch_skins(self.app.skins.offset);
+        }
+        self.app.skins.schedule_preview(std::time::Instant::now());
+    }
+
+    /// Load the preview the cursor rested on: museum skins through the
+    /// preview cache, installed ones from the skins directory.
+    fn load_skin_preview(&self, key: String, source: PreviewSource) {
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = match &source {
+                PreviewSource::Museum(md5) => PreviewCache::user()
+                    .load(md5, net::fetch_skin_bytes)
+                    .and_then(|bytes| WinampSkin::from_wsz_bytes(&bytes, md5)),
+                PreviewSource::Local(name) => match Path::new(name).file_name() {
+                    Some(name) => WinampSkin::from_wsz(&config::skins_dir().join(name)),
+                    None => Err(anyhow::anyhow!("Invalid skin file name")),
+                },
+            };
+            let _ = tx.send(AppEvent::SkinPreviewLoaded {
+                key,
+                result: result.map(Box::new),
+            });
         });
     }
 
@@ -1104,8 +1155,9 @@ impl Controller {
                 self.on_settings_action(action);
             }
             Mode::SkinBrowser => {
-                let action = self.app.handle_skin_browser_key(key);
+                let action = self.app.skins.handle_key(&key);
                 self.on_skin_browser_action(action);
+                self.skin_browser_followups();
             }
             Mode::Onboarding => {
                 let action = self.app.handle_onboarding_key(key);
@@ -1378,28 +1430,14 @@ impl Controller {
                 self.mark_dirty();
             }
             SettingsAction::OpenSkinBrowserLocal | SettingsAction::OpenSkinBrowserOnline => {
-                let online = matches!(action, SettingsAction::OpenSkinBrowserOnline);
-                let app = &mut self.app;
-                app.mode = Mode::SkinBrowser;
-                app.skin_browser_source = if online {
-                    SkinBrowserSource::Online
+                let source = if matches!(action, SettingsAction::OpenSkinBrowserOnline) {
+                    SkinSource::Online
                 } else {
-                    SkinBrowserSource::Local
+                    SkinSource::Local
                 };
-                app.skin_entries.clear();
-                app.skin_list_state.select(Some(0));
-                app.skin_browser_error = None;
-                app.skin_browser_offset = 0;
-                app.skin_browser_has_more = online;
-                app.skin_downloading_md5 = None;
-                app.skin_total_count = 0;
-                app.skin_search_query.clear();
-                app.skin_search_active = false;
-                if online {
-                    self.fetch_skins(0);
-                } else {
-                    self.list_local_skins();
-                }
+                self.app.mode = Mode::SkinBrowser;
+                self.app.skins.open(source);
+                self.reload_skins();
             }
         }
     }
@@ -1420,27 +1458,30 @@ impl Controller {
 
     fn on_skin_browser_action(&mut self, action: SkinBrowserAction) {
         match action {
-            SkinBrowserAction::None | SkinBrowserAction::Back => {}
-            SkinBrowserAction::Download(md5, filename) => {
+            SkinBrowserAction::None => {}
+            SkinBrowserAction::Back => {
+                // Drop in-flight list results; the preview skin is freed.
+                self.skin_fetch_token += 1;
+                self.app.skins.close();
+                self.app.mode = Mode::Settings;
+            }
+            SkinBrowserAction::Install { md5, filename } => {
                 let tx = self.tx.clone();
                 tokio::task::spawn_blocking(move || {
-                    let result = net::download_skin(&md5, &filename, &config::skins_dir());
-                    let _ = tx.send(AppEvent::SkinDownloaded { md5, result });
+                    let result = PreviewCache::user().install(
+                        &md5,
+                        &filename,
+                        &config::skins_dir(),
+                        net::fetch_skin_bytes,
+                    );
+                    let _ = tx.send(AppEvent::SkinInstalled { md5, result });
                 });
             }
-            SkinBrowserAction::LoadLocal(filename) => match Path::new(&filename).file_name() {
+            SkinBrowserAction::Apply(filename) => match Path::new(&filename).file_name() {
                 Some(name) => self.load_skin(Some(config::skins_dir().join(name))),
-                None => self.app.skin_browser_error = Some("Invalid skin file name".into()),
+                None => self.app.skins.notice = Some("Invalid skin file name".into()),
             },
-            SkinBrowserAction::RequestFetch => self.fetch_skins(self.app.skin_browser_offset),
-            SkinBrowserAction::Search(query) => {
-                self.app.skin_search_query = query;
-                self.app.skin_entries.clear();
-                self.app.skin_list_state.select(Some(0));
-                self.app.skin_browser_offset = 0;
-                self.app.skin_browser_has_more = false;
-                self.fetch_skins(0);
-            }
+            SkinBrowserAction::Reload => self.reload_skins(),
         }
     }
 
@@ -1626,48 +1667,47 @@ impl Controller {
                 if token != self.skin_fetch_token {
                     return false;
                 }
-                let app = &mut self.app;
-                app.skin_browser_loading = false;
                 match page {
-                    Ok(page) => {
-                        if requested_offset == 0 {
-                            app.skin_entries = page.entries;
-                        } else {
-                            app.skin_entries.extend(page.entries);
-                        }
-                        app.skin_browser_offset = page.next_offset;
-                        app.skin_browser_has_more = page.has_more;
-                        app.skin_total_count = page.total.unwrap_or(app.skin_entries.len());
-                        if app.skin_list_state.selected().is_none() && !app.skin_entries.is_empty()
-                        {
-                            app.skin_list_state.select(Some(0));
-                        }
+                    Ok(page) => self.app.skins.apply_page(page, requested_offset),
+                    Err(e) => {
+                        self.app.skins.loading = false;
+                        self.app.skins.error = Some(format!("{e:#}"));
                     }
-                    Err(e) => app.skin_browser_error = Some(format!("{e:#}")),
                 }
+                self.skin_browser_followups();
             }
-            AppEvent::LocalSkinsListed(entries) => {
-                self.app.skin_browser_loading = false;
-                self.app.skin_total_count = entries.len();
-                self.app.skin_entries = entries;
-                self.app.skin_list_state.select(Some(0));
+            AppEvent::LocalSkinsListed { token, entries } => {
+                if token != self.skin_fetch_token {
+                    return false;
+                }
+                self.app.skins.set_local(entries);
+                self.skin_browser_followups();
             }
-            AppEvent::SkinDownloaded { md5, result } => {
-                self.app.skin_downloading_md5 = None;
-                match result {
-                    Ok(path) => {
-                        for entry in &mut self.app.skin_entries {
-                            if entry.md5 == md5 {
-                                entry.is_local = true;
-                            }
-                        }
-                        self.load_skin(Some(path));
-                    }
-                    Err(e) => self.app.skin_browser_error = Some(format!("Download failed: {e:#}")),
+            AppEvent::SkinInstalled { md5, result } => match result {
+                Ok(path) => {
+                    let filename = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    self.app.skins.mark_installed(&md5, &filename);
+                    self.load_skin(Some(path));
+                }
+                Err(e) => {
+                    self.app.skins.installing = None;
+                    self.app.skins.notice = Some(format!("Install failed: {e:#}"));
+                }
+            },
+            AppEvent::SkinPreviewLoaded { key, result } => {
+                let result = result.map_err(|e| format!("{e:#}"));
+                if !self.app.skins.finish_preview(&key, result) {
+                    return false;
                 }
             }
             AppEvent::SkinLoaded { path, result } => match result {
                 Ok(skin) => {
+                    if self.app.mode == Mode::SkinBrowser {
+                        self.app.skins.notice = Some(format!("Applied {}", skin.name));
+                    }
                     self.app.winamp_skin = Some(*skin);
                     self.app.skin_path = path;
                     self.gfx.invalidate();
@@ -1676,7 +1716,7 @@ impl Controller {
                 Err(e) => {
                     let msg = format!("Failed to load skin: {e:#}");
                     if self.app.mode == Mode::SkinBrowser {
-                        self.app.skin_browser_error = Some(msg);
+                        self.app.skins.notice = Some(msg);
                     } else {
                         self.app.error(msg);
                     }
@@ -1764,6 +1804,10 @@ impl Controller {
             merge(self.winamp_ui.wants_tick(&self.app.player_view()));
             merge(self.gfx.next_flush_in());
         }
+        if self.app.mode == Mode::SkinBrowser {
+            merge(self.app.skins.preview_due_in(std::time::Instant::now()));
+            merge(self.gfx.next_flush_in());
+        }
         wake
     }
 
@@ -1788,6 +1832,14 @@ impl Controller {
             let view = self.app.player_view();
             redraw |= self.winamp_ui.wants_tick(&view).is_some()
                 || self.gfx.next_flush_in() == Some(Duration::ZERO);
+        }
+        if self.app.mode == Mode::SkinBrowser {
+            if let Some((key, source)) = self.app.skins.start_due_preview(std::time::Instant::now())
+            {
+                self.load_skin_preview(key, source);
+                redraw = true;
+            }
+            redraw |= self.gfx.next_flush_in() == Some(Duration::ZERO);
         }
         redraw
     }
@@ -1836,13 +1888,26 @@ pub async fn run(
             let mut height = 0;
             terminal.draw(|frame| {
                 height = frame.area().height;
-                winamp = ui::draw(frame, &mut ctl.app, &mut ctl.winamp_ui, &mut ctl.gfx);
+                winamp = ui::draw(
+                    frame,
+                    &mut ctl.app,
+                    &mut ctl.winamp_ui,
+                    &mut ctl.preview_ui,
+                    &mut ctl.gfx,
+                );
             })?;
             ctl.screen_height = height;
             if winamp {
                 ctl.gfx.flush(terminal.backend_mut())?;
             } else if images {
                 ctl.gfx.clear(terminal.backend_mut())?;
+                if matches!(ctl.gfx.protocol(), Protocol::Iterm2 | Protocol::Sixel) {
+                    // Their pixels stay until every covered cell is
+                    // repainted, which a full redraw guarantees.
+                    terminal.clear()?;
+                    images = false;
+                    continue;
+                }
             }
             images = winamp;
             redraw = false;
@@ -1928,7 +1993,6 @@ mod tests {
 
     use crossterm::event::{KeyModifiers, MouseButton};
 
-    use crate::gfx::Protocol;
     use crate::playback::Output;
     use crate::view::EqSettings;
 

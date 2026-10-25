@@ -18,6 +18,7 @@ use crate::providers::lyrics::Lyrics;
 use crate::providers::ProviderKind;
 use crate::queue::Queue;
 use crate::skin::WinampSkin;
+use crate::skin_browser::SkinBrowser;
 use crate::theme::Theme;
 use crate::ui::palette::{Palette, PaletteOutcome};
 use crate::view::{EqSettings, PlayStatus, PlayerView, StreamFormat};
@@ -138,32 +139,6 @@ pub enum SettingsField {
     Extractor,
 }
 
-/// A single entry in the skin browser.
-#[derive(Debug, Clone)]
-pub struct SkinEntry {
-    pub md5: String,
-    /// Sanitised file name inside the skins directory.
-    pub filename: String,
-    pub display_name: String,
-    pub is_local: bool,
-    pub average_color: Option<String>,
-}
-
-pub enum SkinBrowserAction {
-    None,
-    Back,
-    Download(String, String), // md5, filename
-    LoadLocal(String),        // filename
-    RequestFetch,
-    Search(String),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum SkinBrowserSource {
-    Local,
-    Online,
-}
-
 pub enum BrowseAction {
     None,
     Cmd(Command),
@@ -243,18 +218,7 @@ pub struct App {
     pub onboarding_dep_selected: usize,
     pub pending_install: Option<Dep>,
     pub settings_field: SettingsField,
-    // Skin browser
-    pub skin_entries: Vec<SkinEntry>,
-    pub skin_list_state: ListState,
-    pub skin_browser_loading: bool,
-    pub skin_browser_error: Option<String>,
-    pub skin_browser_offset: usize,
-    pub skin_browser_has_more: bool,
-    pub skin_downloading_md5: Option<String>,
-    pub skin_total_count: usize,
-    pub skin_browser_source: SkinBrowserSource,
-    pub skin_search_query: String,
-    pub skin_search_active: bool,
+    pub skins: SkinBrowser,
     pub downloading_title: Option<String>,
     pub local_library: Vec<MediaItem>,
     pub library_scanned: bool,
@@ -311,8 +275,6 @@ impl App {
         });
         let mut list_state = ListState::default();
         list_state.select(Some(0));
-        let mut skin_list_state = ListState::default();
-        skin_list_state.select(Some(0));
 
         Self {
             mode: if config.onboarding_done {
@@ -346,17 +308,7 @@ impl App {
             onboarding_dep_selected: 0,
             pending_install: None,
             settings_field: SettingsField::MusicDir,
-            skin_entries: Vec::new(),
-            skin_list_state,
-            skin_browser_loading: false,
-            skin_browser_error: None,
-            skin_browser_offset: 0,
-            skin_browser_has_more: true,
-            skin_downloading_md5: None,
-            skin_total_count: 0,
-            skin_browser_source: SkinBrowserSource::Local,
-            skin_search_query: String::new(),
-            skin_search_active: false,
+            skins: SkinBrowser::default(),
             downloading_title: None,
             local_library: Vec::new(),
             library_scanned: false,
@@ -960,102 +912,6 @@ impl App {
                     _ => OnboardingAction::None,
                 }
             }
-        }
-    }
-
-    pub fn handle_skin_browser_key(&mut self, key: KeyEvent) -> SkinBrowserAction {
-        // Search input mode — capture all keys
-        if self.skin_search_active {
-            return match key.code {
-                KeyCode::Esc => {
-                    self.skin_search_active = false;
-                    self.skin_search_query.clear();
-                    SkinBrowserAction::None
-                }
-                KeyCode::Enter => {
-                    let query = self.skin_search_query.trim().to_string();
-                    self.skin_search_active = false;
-                    if query.is_empty() {
-                        SkinBrowserAction::None
-                    } else {
-                        SkinBrowserAction::Search(query)
-                    }
-                }
-                KeyCode::Backspace => {
-                    self.skin_search_query.pop();
-                    SkinBrowserAction::None
-                }
-                KeyCode::Char(c) => {
-                    self.skin_search_query.push(c);
-                    SkinBrowserAction::None
-                }
-                _ => SkinBrowserAction::None,
-            };
-        }
-
-        let len = self.skin_entries.len();
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => {
-                self.mode = Mode::Settings;
-                SkinBrowserAction::Back
-            }
-            KeyCode::Char('j') | KeyCode::Down if len > 0 => {
-                let i = match self.skin_list_state.selected() {
-                    Some(i) if i + 1 >= len => 0,
-                    Some(i) => i + 1,
-                    None => 0,
-                };
-                self.skin_list_state.select(Some(i));
-                SkinBrowserAction::None
-            }
-            KeyCode::Char('k') | KeyCode::Up if len > 0 => {
-                let i = match self.skin_list_state.selected() {
-                    Some(0) | None => len - 1,
-                    Some(i) => i - 1,
-                };
-                self.skin_list_state.select(Some(i));
-                SkinBrowserAction::None
-            }
-            KeyCode::Char('g') | KeyCode::Home if len > 0 => {
-                self.skin_list_state.select(Some(0));
-                SkinBrowserAction::None
-            }
-            KeyCode::Char('G') | KeyCode::End if len > 0 => {
-                self.skin_list_state.select(Some(len - 1));
-                SkinBrowserAction::None
-            }
-            KeyCode::Enter => {
-                let Some(entry) = self
-                    .skin_list_state
-                    .selected()
-                    .and_then(|i| self.skin_entries.get(i))
-                else {
-                    return SkinBrowserAction::None;
-                };
-                if entry.is_local {
-                    SkinBrowserAction::LoadLocal(entry.filename.clone())
-                } else if self.skin_downloading_md5.is_none() {
-                    let action =
-                        SkinBrowserAction::Download(entry.md5.clone(), entry.filename.clone());
-                    self.skin_downloading_md5 = Some(entry.md5.clone());
-                    action
-                } else {
-                    SkinBrowserAction::None
-                }
-            }
-            KeyCode::Char('n')
-                if self.skin_browser_source == SkinBrowserSource::Online
-                    && self.skin_browser_has_more
-                    && !self.skin_browser_loading =>
-            {
-                SkinBrowserAction::RequestFetch
-            }
-            KeyCode::Char('/') if self.skin_browser_source == SkinBrowserSource::Online => {
-                self.skin_search_active = true;
-                self.skin_search_query.clear();
-                SkinBrowserAction::None
-            }
-            _ => SkinBrowserAction::None,
         }
     }
 

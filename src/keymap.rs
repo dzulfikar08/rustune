@@ -36,8 +36,14 @@ impl Ctx {
     pub const PROMPT: Self = Self(1 << 7);
     /// Command palette.
     pub const PALETTE: Self = Self(1 << 8);
-    /// Every list moved through with `j` / `k`.
+    /// Skin browser (installed and online skins).
+    pub const SKINS: Self = Self(1 << 9);
+    /// Skin browser showing the online museum.
+    pub const SKINS_ONLINE: Self = Self(1 << 10);
+    /// The browse-view lists (library, provider tabs, playlist window).
     const LISTS: Self = Self::LIBRARY.or(Self::PROVIDER).or(Self::PLAYLIST);
+    /// Every list moved through with `j` / `k`, including the skin browser.
+    const MOVABLE: Self = Self::LISTS.or(Self::SKINS);
 
     pub const fn or(self, other: Self) -> Self {
         Self(self.0 | other.0)
@@ -202,6 +208,8 @@ pub enum Action {
     Back,
     Reload,
     Subscribe,
+    // Skin browser
+    SkinFilter,
     // Playlist window
     MoveDown,
     MoveUp,
@@ -273,12 +281,13 @@ pub enum Section {
     Providers,
     Playlist,
     Equalizer,
+    Skins,
     Prompt,
     Palette,
 }
 
 impl Section {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Playback,
         Self::General,
         Self::Lists,
@@ -286,6 +295,7 @@ impl Section {
         Self::Providers,
         Self::Playlist,
         Self::Equalizer,
+        Self::Skins,
         Self::Prompt,
         Self::Palette,
     ];
@@ -294,11 +304,12 @@ impl Section {
         match self {
             Self::Playback => "Playback",
             Self::General => "Panels, themes and general",
-            Self::Lists => "Lists (library, provider tabs, playlist window)",
+            Self::Lists => "Lists (library, provider tabs, playlist window, skin browser)",
             Self::Library => "Library (Local and Online tabs)",
             Self::Providers => "Provider tabs (Radio, Podcasts, Subsonic, Jellyfin)",
             Self::Playlist => "Playlist window (P)",
             Self::Equalizer => "EQ panel (e)",
+            Self::Skins => "Skin browser (Settings → Theme Winamp → i or o)",
             Self::Prompt => "Prompt (search, : commands, save, open)",
             Self::Palette => "Command palette (? or Ctrl+K)",
         }
@@ -552,7 +563,7 @@ pub static BINDINGS: &[Binding] = &[
     // ── Lists ──
     bind(
         S::Lists,
-        Ctx::LISTS,
+        Ctx::MOVABLE,
         &[ch('j'), key(K::Down)],
         A::Down,
         "Move down",
@@ -560,7 +571,7 @@ pub static BINDINGS: &[Binding] = &[
     ),
     bind(
         S::Lists,
-        Ctx::LISTS,
+        Ctx::MOVABLE,
         &[ch('k'), key(K::Up)],
         A::Up,
         "Move up",
@@ -568,7 +579,7 @@ pub static BINDINGS: &[Binding] = &[
     ),
     bind(
         S::Lists,
-        Ctx::LISTS,
+        Ctx::MOVABLE,
         &[ch('g'), key(K::Home)],
         A::Top,
         "First item",
@@ -576,7 +587,7 @@ pub static BINDINGS: &[Binding] = &[
     ),
     bind(
         S::Lists,
-        Ctx::LISTS,
+        Ctx::MOVABLE,
         &[ch('G'), key(K::End)],
         A::Bottom,
         "Last item",
@@ -584,7 +595,7 @@ pub static BINDINGS: &[Binding] = &[
     ),
     bind(
         S::Lists,
-        Ctx::LISTS,
+        Ctx::MOVABLE,
         &[key(K::PageDown)],
         A::PageDown,
         "Page down",
@@ -592,7 +603,7 @@ pub static BINDINGS: &[Binding] = &[
     ),
     bind(
         S::Lists,
-        Ctx::LISTS,
+        Ctx::MOVABLE,
         &[key(K::PageUp)],
         A::PageUp,
         "Page up",
@@ -777,6 +788,55 @@ pub static BINDINGS: &[Binding] = &[
         A::EqPanel,
         "Close the EQ panel",
         "close",
+    ),
+    // ── Skin browser ──
+    bind(
+        S::Skins,
+        Ctx::SKINS,
+        &[key(K::Enter)],
+        A::Activate,
+        "Apply the highlighted skin (Online: install it first)",
+        "apply",
+    ),
+    bind(
+        S::Skins,
+        Ctx::SKINS_ONLINE,
+        &[ch('/')],
+        A::Search,
+        "Search every classic skin in the museum (Online)",
+        "search",
+    ),
+    bind(
+        S::Skins,
+        Ctx::SKINS_ONLINE,
+        &[ch('f')],
+        A::SkinFilter,
+        "Switch between the whole museum and curated skins (Online)",
+        "all/curated",
+    ),
+    bind(
+        S::Skins,
+        Ctx::SKINS,
+        &[key(K::Tab)],
+        A::NextTab,
+        "Switch between installed and online skins",
+        "installed/online",
+    ),
+    bind(
+        S::Skins,
+        Ctx::SKINS,
+        &[ch('r')],
+        A::Reload,
+        "Reload the list",
+        "",
+    ),
+    bind(
+        S::Skins,
+        Ctx::SKINS,
+        &[key(K::Esc), ch('q')],
+        A::Back,
+        "Clear the search, or go back to Settings",
+        "back",
     ),
     // ── Prompt ──
     bind(
@@ -970,6 +1030,15 @@ pub fn hints(active: Ctx) -> impl Iterator<Item = (&'static str, &'static str)> 
     pick(true).chain(pick(false))
 }
 
+/// The `(keys, hint)` of `action` in `active`, for hint bars showing a subset.
+pub fn hint_for(active: Ctx, action: Action) -> Option<(&'static str, &'static str)> {
+    BINDINGS
+        .iter()
+        .zip(labels())
+        .find(|(b, _)| b.action == action && b.ctx.intersects(active) && !b.hint.is_empty())
+        .map(|(b, label)| (label.as_str(), b.hint))
+}
+
 /// The key reference for `--help`.
 pub fn write_help(out: &mut String) {
     for section in Section::ALL {
@@ -1033,7 +1102,12 @@ mod tests {
             Ctx::PROVIDER.or(Ctx::PODCAST),
             Ctx::PLAYLIST,
         ];
-        let mut out = vec![Ctx::PROMPT, Ctx::PALETTE];
+        let mut out = vec![
+            Ctx::PROMPT,
+            Ctx::PALETTE,
+            Ctx::SKINS,
+            Ctx::SKINS.or(Ctx::SKINS_ONLINE),
+        ];
         for view in views {
             out.push(Ctx::GLOBAL.or(view));
             out.push(Ctx::GLOBAL.or(view).or(Ctx::EQ));
@@ -1150,6 +1224,34 @@ mod tests {
         assert!(hints.contains(&("f", "subscribe")));
         assert!(hints.contains(&("?/Ctrl+K", "commands")));
         assert!(!hints.iter().any(|(_, h)| *h == "download"));
+    }
+
+    #[test]
+    fn skin_browser_keys_are_its_own() {
+        let local = Ctx::SKINS;
+        let online = Ctx::SKINS.or(Ctx::SKINS_ONLINE);
+        let key = |c| ev(KeyCode::Char(c), KeyModifiers::NONE);
+        assert_eq!(lookup(online, &key('j')), Some(Action::Down));
+        assert_eq!(lookup(online, &key('f')), Some(Action::SkinFilter));
+        assert_eq!(lookup(local, &key('f')), None, "online only");
+        assert_eq!(lookup(online, &key('q')), Some(Action::Back));
+        assert_eq!(lookup(online, &key(' ')), None, "no player keys");
+        assert_eq!(
+            lookup(online, &ev(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(Action::Activate)
+        );
+        let hints: Vec<_> = hints(online).collect();
+        assert_eq!(hints[0], ("Enter", "apply"));
+        assert!(hints.contains(&("f", "all/curated")));
+        assert!(!hints(local).any(|(_, h)| h == "search"));
+        assert_eq!(
+            hint_for(Ctx::PROMPT, Action::Submit),
+            Some(("Enter", "submit"))
+        );
+        assert_eq!(hint_for(local, Action::SkinFilter), None);
+        // The skin browser's keys never reach the browse views.
+        let browse = Ctx::GLOBAL.or(Ctx::LIBRARY);
+        assert_ne!(lookup(browse, &key('f')), Some(Action::SkinFilter));
     }
 
     #[test]

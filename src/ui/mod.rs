@@ -13,6 +13,7 @@ pub mod skin_layout;
 mod winamp;
 
 pub use eq::handle as eq_action;
+pub use skin_browser::PreviewUi;
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
@@ -33,14 +34,15 @@ fn vis_height(app: &App, total: u16) -> u16 {
     }
 }
 
-/// Draw one frame; returns whether the Winamp skin view was drawn (its
-/// images then need `gfx.flush`). Winamp state lives outside `App` because
-/// the skin view borrows `App` through `player_view()` while the painter
-/// is mutated.
+/// Draw one frame; returns whether a view using the graphics painter was
+/// drawn (the Winamp skin or the skin browser's preview; its images then
+/// need `gfx.flush`). Winamp state lives outside `App` because the skin
+/// view borrows `App` through `player_view()` while the painter is mutated.
 pub fn draw(
     frame: &mut Frame,
     app: &mut App,
     winamp_ui: &mut WinampUiState,
+    preview_ui: &mut PreviewUi,
     gfx: &mut GfxPainter,
 ) -> bool {
     // Full-screen takeovers
@@ -48,7 +50,7 @@ pub fn draw(
     match app.mode {
         Mode::Onboarding => onboarding::render(frame, area, app),
         Mode::Settings => settings::render(frame, area, app),
-        Mode::SkinBrowser => skin_browser::render(frame, area, app),
+        Mode::SkinBrowser => return skin_browser::render(frame, area, app, preview_ui, gfx),
         // The palette replaces the skin: its images would cover the overlay.
         Mode::Browse | Mode::Input if app.is_winamp() && app.palette.is_none() => {
             let view = app.player_view();
