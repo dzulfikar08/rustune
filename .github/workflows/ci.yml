@@ -165,3 +165,113 @@ jobs:
               sys.exit(1)
           print("smoke test passed (%d bytes of output)" % len(out))
           EOF
+      - name: MPRIS over a private D-Bus session
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get install -y dbus
+          dbus-run-session -- python3 - <<'EOF'
+          import math, os, pty, struct, subprocess, sys, tempfile, threading, time, wave
+          import fcntl, termios
+
+          tmp = tempfile.mkdtemp()
+          wav = os.path.join(tmp, "tone.wav")
+          rate = 44100
+          with wave.open(wav, "wb") as w:
+              w.setnchannels(2)
+              w.setsampwidth(2)
+              w.setframerate(rate)
+              w.writeframes(b"\0\0\0\0" * rate * 30)
+          home = os.path.join(tmp, "home")
+          xdg = os.path.join(home, ".config")
+          os.makedirs(os.path.join(xdg, "rustune"))
+          with open(os.path.join(xdg, "rustune", "config.toml"), "w") as f:
+              f.write('onboarding_done = true\nmusic_dir = "%s"\n' % tmp)
+          env = dict(os.environ, TERM="xterm-256color", HOME=home, XDG_CONFIG_HOME=xdg)
+
+          DEST = "org.mpris.MediaPlayer2.rustune"
+          PATH = "/org/mpris/MediaPlayer2"
+          PLAYER = "org.mpris.MediaPlayer2.Player"
+          def send(*args):
+              r = subprocess.run(["dbus-send", "--session", "--print-reply", "--reply-timeout=3000",
+                                  "--dest=" + DEST, PATH] + list(args),
+                                 capture_output=True, text=True, timeout=10)
+              print("$ dbus-send", " ".join(args), "\n" + r.stdout + r.stderr)
+              return r
+          def get(iface, prop):
+              return send("org.freedesktop.DBus.Properties.Get", "string:" + iface, "string:" + prop).stdout
+          def wait_for(pred, what, timeout=10):
+              end = time.time() + timeout
+              while time.time() < end:
+                  if pred():
+                      return
+                  time.sleep(0.2)
+              fail("timed out waiting for " + what)
+
+          master, slave = os.openpty()
+          fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+          proc = subprocess.Popen(["target/release/rustune", wav], stdin=slave,
+                                  stdout=slave, stderr=slave, env=env, start_new_session=True)
+          os.close(slave)
+          out = bytearray()
+          def drain():
+              while True:
+                  try:
+                      chunk = os.read(master, 65536)
+                  except OSError:
+                      break
+                  if not chunk:
+                      break
+                  out.extend(chunk)
+          threading.Thread(target=drain, daemon=True).start()
+          def fail(msg):
+              print("MPRIS test failed:", msg)
+              print(bytes(out[-2048:]).decode("utf-8", errors="replace"))
+              proc.kill()
+              sys.exit(1)
+
+          def owned():
+              r = subprocess.run(["dbus-send", "--session", "--print-reply", "--dest=org.freedesktop.DBus",
+                                  "/org/freedesktop/DBus", "org.freedesktop.DBus.NameHasOwner",
+                                  "string:" + DEST], capture_output=True, text=True, timeout=10)
+              return "boolean true" in r.stdout
+          wait_for(owned, DEST + " on the bus")
+
+          if 'string "rustune"' not in get("org.mpris.MediaPlayer2", "Identity"):
+              fail("Identity")
+          wait_for(lambda: '"tone"' in get(PLAYER, "Metadata"), "Metadata with the track title")
+          if "mpris:trackid" not in get(PLAYER, "Metadata"):
+              fail("Metadata lacks mpris:trackid")
+          if "org.mpris.MediaPlayer2.Player" not in send("org.freedesktop.DBus.Introspectable.Introspect").stdout:
+              fail("Introspect")
+          if "CanControl" not in send("org.freedesktop.DBus.Properties.GetAll", "string:" + PLAYER).stdout:
+              fail("GetAll")
+
+          monitor = subprocess.Popen(["dbus-monitor", "--session",
+                                      "type='signal',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged'"],
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+          time.sleep(1)
+          send("org.freedesktop.DBus.Properties.Set", "string:" + PLAYER, "string:Volume", "variant:double:0.25")
+          wait_for(lambda: "double 0.25" in get(PLAYER, "Volume"), "Volume 0.25")
+          send("org.freedesktop.DBus.Properties.Set", "string:" + PLAYER, "string:LoopStatus", "variant:string:Playlist")
+          wait_for(lambda: '"Playlist"' in get(PLAYER, "LoopStatus"), "LoopStatus Playlist")
+          send(PLAYER + ".Stop")
+          wait_for(lambda: '"Stopped"' in get(PLAYER, "PlaybackStatus"), "PlaybackStatus Stopped")
+          time.sleep(1)
+          monitor.terminate()
+          signals = monitor.communicate(timeout=5)[0]
+          print(signals)
+          if "Volume" not in signals or "LoopStatus" not in signals:
+              fail("PropertiesChanged signals for Volume/LoopStatus not seen")
+
+          send("org.mpris.MediaPlayer2.Quit")
+          try:
+              code = proc.wait(timeout=10)
+          except subprocess.TimeoutExpired:
+              fail("Quit did not exit")
+          if code != 0:
+              fail("exit status %d" % code)
+          if b"panicked" in out:
+              fail("panic in output")
+          print("MPRIS test passed")
+          EOF

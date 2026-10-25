@@ -21,6 +21,7 @@ A lightweight terminal music player: a single small binary with no mpv or other 
 - **Winamp 2.x skins** (`.wsz`) — pixel-accurate rendering with kitty, iTerm2 or sixel graphics, or a half-block fallback; built-in browser for the [Winamp Skin Museum](https://skins.webamp.org/)
 - **Playlists** — load and save `.m3u` / `.pls`
 - **Session restore** — volume, balance, EQ, shuffle/repeat, visualizer, queue and resume position
+- **Media keys and now-playing widgets** — MPRIS2 on Linux (`playerctl`, GNOME/KDE media controls), Now Playing and the media keys on macOS
 - **Themes** — Dark, Light and Winamp; full mouse support
 
 ## Screenshots
@@ -221,6 +222,7 @@ search_timeout_secs = 60
 page_size = 30
 replaygain = "off"
 graphics = "auto"
+media_controls = true
 ```
 
 | Option | Default | Description |
@@ -233,6 +235,17 @@ graphics = "auto"
 | `page_size` | `30` | Results per page |
 | `replaygain` | `off` | `off`, `track`, or `album` |
 | `graphics` | `auto` | Skin graphics: `auto`, `kitty`, `iterm2`, `sixel`, or `halfblock` |
+| `media_controls` | `true` | Media keys and the OS now-playing widget (see below) |
+
+### Media keys
+
+With `media_controls = true` (the default) rustune shows up in the system's media controls, and media keys control it:
+
+- **Linux**: an MPRIS2 player on the D-Bus session bus (`org.mpris.MediaPlayer2.rustune`). Play, pause, stop, next, previous, seek, volume, shuffle and loop status all work, so do `playerctl` and desktop widgets; local files get cover art from a `cover.jpg`/`folder.jpg` next to them. rustune speaks D-Bus itself (no libdbus); without a session bus, media controls simply stay off.
+- **macOS**: Now Playing (title, artist, album, duration, position) and the media keys / Control Center (play, pause, next, previous, scrubbing).
+- **Windows**: not supported yet.
+
+`rustune doctor` reports whether media controls are available.
 
 ### Providers
 

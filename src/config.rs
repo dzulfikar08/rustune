@@ -28,6 +28,10 @@ pub struct Config {
     /// Winamp skin output: auto, kitty, iterm2, sixel or halfblock.
     #[serde(default = "default_graphics")]
     pub graphics: String,
+    /// Media keys and the OS now-playing widget (MPRIS on Linux, Now
+    /// Playing on macOS).
+    #[serde(default = "default_true")]
+    pub media_controls: bool,
     /// Radio, podcasts, lyrics, Subsonic and Jellyfin (`[providers.*]`).
     #[serde(default)]
     pub providers: ProvidersConfig,
@@ -64,6 +68,10 @@ fn default_page_size() -> usize {
 
 fn default_graphics() -> String {
     "auto".into()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// `<config dir>/rustune` (e.g. `~/.config/rustune` on Linux).
@@ -163,6 +171,7 @@ impl Default for Config {
             page_size: default_page_size(),
             replaygain: ReplayGainMode::Off,
             graphics: default_graphics(),
+            media_controls: true,
             providers: ProvidersConfig::default(),
         }
     }
@@ -181,6 +190,7 @@ mod tests {
         assert_eq!(cfg.search_timeout_secs, 5);
         assert_eq!(cfg.page_size, 30);
         assert_eq!(cfg.replaygain, ReplayGainMode::Off);
+        assert!(cfg.media_controls);
         assert!(cfg.providers.subsonic.is_none());
     }
 

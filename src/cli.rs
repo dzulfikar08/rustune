@@ -99,6 +99,11 @@ FILES:
 Playback is built in (no mpv). Optional tools: yt-dlp (online search and
 downloads), ffmpeg (opus/wma and HLS streams). Run '{program} doctor'.
 
+MEDIA KEYS:
+    Media keys and the system's now-playing controls drive the player: MPRIS
+    on Linux (playerctl, desktop widgets), Now Playing on macOS. Turn off with
+    media_controls = false in the config. Not available on Windows.
+
 MORE:
     https://rustune.dzulfikar.com",
         version = env!("CARGO_PKG_VERSION"),
@@ -163,6 +168,7 @@ pub async fn doctor() {
             .map(|k| k.display_name()),
     );
     println!("  [ok] sources: {}", sources.join(", "));
+    println!("  {}", crate::mediactl::doctor(cfg.media_controls));
 
     println!("\nPlayback needs no external tools. Run 'rustune' to start.");
 }

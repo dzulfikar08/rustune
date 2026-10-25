@@ -12,6 +12,7 @@ mod gfx;
 mod install;
 mod library;
 mod media;
+mod mediactl;
 mod net;
 mod playback;
 mod playlist_io;
@@ -74,7 +75,7 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Ok(Cli::Run { inputs }) => match run_tui(inputs) {
+        Ok(Cli::Run { inputs }) => match mediactl::host(move || run_tui(inputs)) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("rustune: {e:#}");
@@ -128,6 +129,9 @@ fn run_tui(inputs: Vec<String>) -> Result<()> {
         }
         let painter = graphics_painter(&config, winamp);
         let mut ctl = Controller::new(config, state, tx.clone(), playback, painter);
+        let media_controls = ctl.app.config.media_controls;
+        ctl.observers
+            .extend(mediactl::start(media_controls, tx.clone()));
         if let Some(warning) = config_warning.or(state_warning) {
             ctl.app.error(warning);
         }

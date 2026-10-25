@@ -61,6 +61,9 @@ struct Preload {
     id: String,
 }
 
+/// Called with the app state after changes (see `Controller::observers`).
+pub type Observer = Box<dyn FnMut(&App)>;
+
 pub struct Controller {
     pub app: App,
     playback: Playback,
@@ -96,6 +99,9 @@ pub struct Controller {
     vis_at: Instant,
     /// Height of the last drawn frame (decides whether the vis strip shows).
     screen_height: u16,
+    /// Notified with the app state after every change (IPC status, OS media
+    /// controls). Each observer diffs cheaply against what it last saw.
+    pub observers: Vec<Observer>,
 }
 
 /// Parse a `:command` typed into the prompt into a player `Command`.
@@ -271,6 +277,14 @@ impl Controller {
             pacer: FramePacer::default(),
             vis_at: Instant::now(),
             screen_height: 0,
+            observers: Vec::new(),
+        }
+    }
+
+    /// Tell every observer the app state may have changed.
+    pub fn notify_observers(&mut self) {
+        for observer in &mut self.observers {
+            observer(&self.app);
         }
     }
 
@@ -1656,6 +1670,7 @@ impl Controller {
                     return false;
                 }
             }
+            AppEvent::Command(cmd) => self.apply(cmd),
         }
         true
     }
@@ -1762,6 +1777,7 @@ pub async fn run(
     let mut redraw = true;
     // Skin images are on screen and must be deleted when the view changes.
     let mut images = false;
+    ctl.notify_observers();
     loop {
         if redraw {
             let mut winamp = false;
@@ -1801,9 +1817,15 @@ pub async fn run(
             event = rx.recv() => {
                 let Some(event) = event else { return Ok(()) };
                 redraw = ctl.drain(event, &mut rx);
+                if redraw {
+                    ctl.notify_observers();
+                }
             }
             () = tokio::time::sleep(tick.unwrap_or_default()), if tick.is_some() => {
                 redraw = ctl.on_tick();
+                if redraw {
+                    ctl.notify_observers();
+                }
             }
             () = tokio::time::sleep_until(save_at.unwrap_or_else(Instant::now)), if save_at.is_some() => {
                 ctl.flush_state();

@@ -67,4 +67,7 @@ pub enum AppEvent {
         result: Result<()>,
     },
     StateSaved(Result<()>),
+    /// A player command from outside the key handler (IPC socket, OS media
+    /// controls); applied through `Controller::apply`.
+    Command(crate::command::Command),
 }

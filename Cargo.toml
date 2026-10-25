@@ -28,6 +28,22 @@ md-5 = "0.10"
 # already in the tree via zip, default miniz_oxide backend.
 flate2 = "1"
 
+# Media keys / Now Playing (src/mediactl). All but objc2-media-player are
+# already in the macOS tree through cpal; features are the minimum used.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+dispatch2 = { version = "0.3", default-features = false, features = ["std"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFRunLoop", "CFDate"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSDictionary", "NSValue", "NSObject"] }
+objc2-media-player = { version = "0.3", default-features = false, features = ["std", "block2", "MPRemoteCommandCenter", "MPRemoteCommand", "MPRemoteCommandEvent", "MPNowPlayingInfoCenter", "MPMediaItem"] }
+
+# libc is already in the tree (cpal, alsa): getuid() for the D-Bus SASL
+# handshake (MPRIS uses the built-in client in src/mediactl/dbus.rs) and
+# dlopen() of AppKit on macOS.
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+libc = "0.2"
+
 [profile.release]
 lto = "fat"
 codegen-units = 1
