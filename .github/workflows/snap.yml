@@ -32,10 +32,14 @@ jobs:
 
       - name: Install the snap
         run: |
+          ls -l ${{ steps.build.outputs.snap }}
           sudo snap install --dangerous ${{ steps.build.outputs.snap }}
           snap connections rustune
           grep -A8 '^apps:' /snap/rustune/current/meta/snap.yaml
-
+          # Every library the binary and the PulseAudio plugin need must
+          # resolve inside the snap (or its core24 base).
+          snap run --shell rustune -c 'ldd "$SNAP/bin/rustune" "$SNAP"/usr/lib/*/alsa-lib/*.so "$SNAP"/usr/lib/*/libpulse.so.0' | tee ldd.txt
+          ! grep 'not found' ldd.txt
       - name: rustune --version / --help / doctor
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)

@@ -56,9 +56,32 @@ parts:
     override-pull: |
       craftctl default
       craftctl set version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+    # libasound2-plugins drags in ffmpeg, jack and more for plugins rustune
+    # never loads; keep alsa-lib, its PulseAudio plugin and libpulse's deps.
     prime:
-      - -usr/share/doc
-      - -usr/share/man
+      - bin/rustune
+      - usr/share/alsa
+      - usr/lib/*/libasound.so.2*
+      - usr/lib/*/alsa-lib/libasound_module_pcm_pulse.so
+      - usr/lib/*/alsa-lib/libasound_module_ctl_pulse.so
+      - usr/lib/*/libpulse.so.0*
+      - usr/lib/*/pulseaudio
+      - usr/lib/*/libsndfile.so.1*
+      - usr/lib/*/libFLAC.so.*
+      - usr/lib/*/libvorbis.so.*
+      - usr/lib/*/libvorbisenc.so.*
+      - usr/lib/*/libogg.so.*
+      - usr/lib/*/libopus.so.*
+      - usr/lib/*/libmpg123.so.*
+      - usr/lib/*/libmp3lame.so.*
+      - usr/lib/*/libasyncns.so.*
+      - usr/lib/*/libX11.so.*
+      - usr/lib/*/libX11-xcb.so.*
+      - usr/lib/*/libxcb.so.*
+      - usr/lib/*/libXau.so.*
+      - usr/lib/*/libXdmcp.so.*
+      - usr/lib/*/libbsd.so.*
+      - usr/lib/*/libmd.so.*
 
   # ALSA config that routes the default device to PulseAudio, and the
   # launcher that points libpulse at the host's socket.
