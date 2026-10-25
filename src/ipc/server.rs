@@ -5,12 +5,13 @@
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::protocol::{error_line, Request, Status, OK};
+use super::protocol::{error_line, Query, Request, Status, OK};
 use super::transport::{self, Conn, Listener, Remover};
 use crate::app::App;
 use crate::event::AppEvent;
@@ -158,6 +159,7 @@ fn serve(conn: Conn, tx: &UnboundedSender<AppEvent>, shared: &Shared) {
         }
         let reply = match Request::parse(request) {
             Ok(Request::Command(cmd)) => apply(tx, cmd),
+            Ok(Request::Query(query)) => ask(tx, query),
             Ok(Request::Status) => shared.status_line(),
             Ok(Request::Subscribe) => {
                 subscribe(reader.get_mut(), shared);
@@ -182,6 +184,23 @@ fn apply(tx: &UnboundedSender<AppEvent>, cmd: crate::command::Command) -> String
     // applies the command later; the reply just doesn't wait for it.
     let _ = applied.recv_timeout(APPLY_TIMEOUT);
     OK.to_string()
+}
+
+/// Hand `query` to the controller and wait (bounded) for its answer.
+fn ask(tx: &UnboundedSender<AppEvent>, query: Query) -> String {
+    let timeout = query.timeout();
+    let (reply, answer) = std::sync::mpsc::sync_channel(1);
+    if tx.send(AppEvent::Query { query, reply }).is_err() {
+        return error_line("rustune is shutting down");
+    }
+    match answer.recv_timeout(timeout) {
+        Ok(line) => line,
+        Err(RecvTimeoutError::Timeout) => error_line(&format!(
+            "rustune did not answer within {} s",
+            timeout.as_secs()
+        )),
+        Err(RecvTimeoutError::Disconnected) => error_line("rustune dropped the request"),
+    }
 }
 
 /// Stream the status now and after every change until the client leaves
@@ -217,7 +236,7 @@ mod tests {
     use super::*;
     use crate::command::Command;
     use crate::config::Config;
-    use crate::ipc::protocol::check_reply;
+    use crate::ipc::protocol::{check_reply, reply_line, QueueReply};
     use crate::view::RepeatMode;
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -258,6 +277,14 @@ mod tests {
                     }
                     AppEvent::Command(Command::Quit) => quit = true,
                     AppEvent::Command(cmd) => seen.push(cmd),
+                    AppEvent::Query {
+                        query: Query::Queue,
+                        reply,
+                    } => {
+                        let _ = reply.send(reply_line(&QueueReply::of(&app)));
+                    }
+                    // Unanswered: the client gets an error, not a hang.
+                    AppEvent::Query { reply, .. } => drop(reply),
                     AppEvent::Flush(done) => {
                         observer(&app);
                         let _ = done.send(());
@@ -307,6 +334,15 @@ mod tests {
         let mut event = String::new();
         watch.read_line(&mut event).unwrap();
         assert_eq!(serde_json::from_str::<Status>(&event).unwrap().volume, 40);
+
+        let queue: QueueReply =
+            serde_json::from_value(check_reply(&request(&mut conn, r#"{"get":"queue"}"#)).unwrap())
+                .unwrap();
+        assert!(queue.items.is_empty());
+        let reply = request(&mut conn, r#"{"get":"lyrics"}"#);
+        assert!(check_reply(&reply).unwrap_err().contains("dropped"));
+        let reply = request(&mut conn, r#"{"keys":["nope"]}"#);
+        assert!(check_reply(&reply).unwrap_err().contains("bad key"));
 
         let repeat = Request::Command(Command::SetRepeat(RepeatMode::One)).encode();
         let reply = request(&mut conn, &repeat);

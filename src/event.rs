@@ -84,4 +84,23 @@ pub enum AppEvent {
     /// Answer once every earlier event is applied and observers have seen the
     /// result, so an IPC client's next request reads fresh state.
     Flush(std::sync::mpsc::SyncSender<()>),
+    /// An IPC request the player answers itself (queue, lyrics, screen,
+    /// keys, search, skin); the answer goes to `reply`.
+    Query {
+        query: crate::ipc::protocol::Query,
+        reply: crate::ipc::protocol::Reply,
+    },
+    /// Send `line` to an IPC client once every earlier event is applied.
+    Answer {
+        reply: crate::ipc::protocol::Reply,
+        line: String,
+    },
+    /// A search requested over IPC finished (`opened`: the podcast show or
+    /// album these tracks were loaded from).
+    SearchDone {
+        search: crate::ipc::protocol::Search,
+        result: Result<Vec<Entry>>,
+        reply: crate::ipc::protocol::Reply,
+        opened: Option<String>,
+    },
 }

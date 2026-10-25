@@ -5,7 +5,9 @@
 
 pub mod client;
 pub mod daemon;
+pub mod keys;
 pub mod protocol;
+pub mod screen;
 mod server;
 mod transport;
 

@@ -582,7 +582,7 @@ fn prompt_label(kind: ProviderKind) -> &'static str {
     }
 }
 
-fn search_request(kind: ProviderKind, query: String) -> Request {
+pub(crate) fn search_request(kind: ProviderKind, query: String) -> Request {
     match kind {
         ProviderKind::Radio => Request::RadioSearch(query),
         ProviderKind::Podcast => Request::PodcastSearch(query),

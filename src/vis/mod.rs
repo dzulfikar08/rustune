@@ -58,7 +58,6 @@ const ALL: [VisMode; 8] = [
 pub const MAX_BANDS: usize = 256;
 
 impl VisMode {
-    #[cfg(test)]
     /// All modes in cycling order.
     pub fn list() -> &'static [VisMode] {
         &ALL
@@ -77,7 +76,6 @@ impl VisMode {
         }
     }
 
-    #[cfg(test)]
     /// Case-insensitive inverse of [`name`](Self::name).
     pub fn from_name(name: &str) -> Option<Self> {
         let name = name.trim();

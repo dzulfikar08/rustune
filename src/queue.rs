@@ -102,6 +102,11 @@ impl Queue {
         self.current.map(|i| &self.items[i])
     }
 
+    /// The current track, for updating what was learnt while resolving it.
+    pub fn current_mut(&mut self) -> Option<&mut MediaItem> {
+        self.current.map(|i| &mut self.items[i])
+    }
+
     pub fn cursor(&self) -> usize {
         self.cursor
     }

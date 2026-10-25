@@ -83,20 +83,55 @@ USAGE:
     {program} doctor                       Check audio output, optional tools and paths
     {program} --help | --version
 
-REMOTE CONTROL (talks to the running player or daemon):
+REMOTE CONTROL (talks to the running player or daemon; exits 1 if none runs):
+  Playback
     {program} play | pause | toggle | stop | next | prev | shuffle | quit
-    {program} status [--json]              Now playing, time, volume, modes, queue
+    {program} status [--json]              Now playing, time, volume, modes, queue, view
     {program} volume 0-100|+N|-N           Set or change the volume (percent)
     {program} seek SECS|MM:SS|+N|-N        Jump to a position or skip N seconds
     {program} repeat [off|all|one]         Set (or cycle) the repeat mode
     {program} eq PRESET|on|off|toggle      EQ preset (turns the EQ on) or on/off
-    {program} queue ITEM...                Append files, directories or URLs
     {program} watch                        Print a JSON status line on every change
+  Queue (positions start at 1)
+    {program} queue ITEM...                Append files, directories, playlists or URLs
+    {program} list [--json]                The queue; > marks the playing track, * the cursor
+    {program} jump N                       Play queue entry N
+    {program} remove N                     Remove queue entry N
+    {program} move FROM TO                 Move queue entry FROM to position TO
+    {program} clear                        Stop and empty the queue
+  Search (runs in the player, like its source tabs)
+    {program} search SOURCE QUERY... [--limit N] [--json] [--queue | --play N]
+        SOURCE: local, online (yt-dlp), radio, podcasts, subsonic, jellyfin.
+        Prints numbered results. --queue appends every playable result;
+        --play N replaces the queue with the results and plays result N.
+        Podcast results are shows: --play N plays that show's newest episode.
+        e.g. {program} search online lofi beats --play 1
+  Look
+    {program} theme dark|light|winamp      Switch the theme
+    {program} vis MODE|next|list           Visualizer: bars, braille, led, mirror, scope,
+                                           spectrogram, fire, none
+    {program} skin NAME|MD5|FILE.wsz       Apply a Winamp skin (installed name, Skin
+                                           Museum md5 to download, or a file)
+    {program} lyrics [--json]              Lyrics of the current track (or why there are none)
+  Driving the TUI (not in --daemon mode)
+    {program} key KEY... [--text WORDS]    Press keys as if typed: j, ?, G, Enter, Esc, Tab,
+                                           BackTab, Backspace, Up, Down, Left, Right, PgUp,
+                                           PgDn, Home, End, Space, Del, F1-F12, ctrl+k,
+                                           alt+x, shift+Right; --text types a string
+    {program} screen [--ansi] [--json]     Print the last drawn frame (plain text, ANSI
+                                           colours, or JSON with the prompt cursor)
+  Anything else
+    {program} send 'JSON'                  Send one protocol request, print the raw reply
+
+Page URLs on youtube.com, youtu.be, music.youtube.com, soundcloud.com,
+*.bandcamp.com, vimeo.com and mixcloud.com play through yt-dlp
+(e.g. {program} https://youtu.be/ID); direct media URLs stream natively.
 
 ARGUMENTS:
     FILE       Audio file (mp3, flac, ogg, wav, m4a, aac, alac, aiff, ...)
     DIR        Directory, scanned recursively for audio files
-    URL        http(s) stream or radio playlist, or a YouTube URL (yt-dlp)
+    URL        http(s) stream or radio playlist, or a YouTube, SoundCloud, Bandcamp,
+               Vimeo or Mixcloud page (yt-dlp)
     PLAYLIST   .m3u / .m3u8 / .pls (entries relative to the playlist)
 
 In the player, press ? or Ctrl+K for a searchable list of every command.
@@ -114,7 +149,8 @@ FILES:
     socket      {socket}
 
 The control socket speaks newline-delimited JSON: {{\"cmd\":\"next\"}},
-{{\"cmd\":\"set_volume\",\"arg\":0.5}}, {{\"get\":\"status\"}}, {{\"subscribe\":true}}.
+{{\"cmd\":\"set_volume\",\"arg\":0.5}}, {{\"get\":\"status|queue|lyrics|screen\"}},
+{{\"keys\":[\"j\"]}}, {{\"search\":{{...}}}}, {{\"skin\":\"...\"}}, {{\"subscribe\":true}}.
 Set RUSTUNE_SOCKET to use another socket path.
 
 Playback is built in (no mpv). Optional tools: yt-dlp (online search and
@@ -330,6 +366,22 @@ mod tests {
             "volume 0-100|+N|-N",
             "watch",
             ".pls",
+            "list [--json]",
+            "jump N",
+            "remove N",
+            "move FROM TO",
+            "clear",
+            "search SOURCE QUERY",
+            "--play N",
+            "newest episode",
+            "theme dark|light|winamp",
+            "vis MODE|next|list",
+            "skin NAME|MD5|FILE.wsz",
+            "lyrics [--json]",
+            "key KEY... [--text WORDS]",
+            "screen [--ansi] [--json]",
+            "send 'JSON'",
+            "soundcloud.com",
         ] {
             assert!(help.contains(needle), "{needle}");
         }
@@ -356,6 +408,7 @@ mod tests {
         let kinds: Vec<&SourceKind> = items.iter().map(|i| &i.source).collect();
         assert_eq!(items.len(), 7, "{items:?}");
         assert_eq!(kinds[0], &SourceKind::Extractor("ytdlp".into()));
+        assert_eq!(items[0].id, "https://youtu.be/abcDEF12345");
         assert_eq!(kinds[1], &SourceKind::Url);
         assert_eq!(items[2].title, "1");
         assert_eq!(items[3].title, "2");
@@ -365,5 +418,57 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("missing.mp3"));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn inputs_are_classified_as_pages_media_urls_or_paths() {
+        let dir = std::env::temp_dir().join(format!("rustune-cls-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("song.mp3");
+        std::fs::write(&file, b"x").unwrap();
+        let inputs = vec![
+            "https://soundcloud.com/artist/track".to_string(),
+            "https://artist.bandcamp.com/album/lp".to_string(),
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_string(),
+            "https://cdn.example/stream.mp3".to_string(),
+            "https://soundcloud.com/artist/clip.mp3".to_string(),
+            file.to_string_lossy().into_owned(),
+        ];
+        let (items, errors) = resolve_inputs(&inputs, &["mp3".to_string()]);
+        assert!(errors.is_empty(), "{errors:?}");
+        let ytdlp = SourceKind::Extractor("ytdlp".into());
+        let got: Vec<(&SourceKind, &str)> =
+            items.iter().map(|i| (&i.source, i.id.as_str())).collect();
+        assert_eq!(got[0], (&ytdlp, inputs[0].as_str()));
+        assert_eq!(got[1], (&ytdlp, inputs[1].as_str()));
+        assert_eq!(got[2], (&ytdlp, inputs[2].as_str()));
+        assert_eq!(got[3], (&SourceKind::Url, inputs[3].as_str()));
+        assert_eq!(got[4], (&SourceKind::Url, inputs[4].as_str()));
+        assert_eq!(got[5].0, &SourceKind::Local);
+        // Until yt-dlp names it, a page is titled by its URL.
+        assert_eq!(items[0].title, inputs[0]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn new_remote_commands_route_to_the_remote() {
+        assert_eq!(
+            parse(args(&["list", "--json"])),
+            Ok(Cli::Remote(Remote::List { json: true }))
+        );
+        assert_eq!(
+            parse(args(&["key", "j", "j"])),
+            Ok(Cli::Remote(Remote::Keys(args(&["j", "j"]))))
+        );
+        assert!(matches!(
+            parse(args(&["search", "local", "tone"])),
+            Ok(Cli::Remote(Remote::Search { .. }))
+        ));
+        assert_eq!(
+            parse(args(&["https://youtu.be/x"])),
+            Ok(Cli::Run {
+                inputs: args(&["https://youtu.be/x"])
+            })
+        );
     }
 }
