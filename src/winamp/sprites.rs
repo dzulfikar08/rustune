@@ -280,3 +280,138 @@ pub mod pl_pos {
         (WINDOW_W as i32 - 150 + 66, bottom_y(h) + 23)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn inside(r: Px, w: u32, h: u32) -> bool {
+        r.x >= 0 && r.y >= 0 && r.x as u32 + r.w <= w && r.y as u32 + r.h <= h
+    }
+
+    #[test]
+    fn sprites_fit_standard_sheet_sizes() {
+        let sheets: &[(&[Px], u32, u32)] = &[
+            (&[MAIN_BG], 275, 116),
+            (
+                &[
+                    TITLE_BAR,
+                    TITLE_BAR_SELECTED,
+                    OPTIONS_DEPRESSED,
+                    MINIMIZE_DEPRESSED,
+                    SHADE_DEPRESSED,
+                    CLOSE_DEPRESSED,
+                    CLUTTER_BAR,
+                ],
+                344,
+                87,
+            ),
+            (
+                &[
+                    PREVIOUS,
+                    PLAY,
+                    PAUSE,
+                    STOP,
+                    NEXT,
+                    PREVIOUS.offset(0, CBUTTON_PRESSED_DY),
+                    NEXT.offset(0, CBUTTON_PRESSED_DY),
+                    EJECT.offset(0, EJECT_PRESSED_DY),
+                ],
+                136,
+                36,
+            ),
+            (
+                &[
+                    SHUFFLE.offset(0, SHUFREP_ROWS[3]),
+                    REPEAT.offset(0, SHUFREP_ROWS[3]),
+                    EQ_BUTTON.offset(WINDOW_BUTTON_DEPRESSED_DX, WINDOW_BUTTON_SELECTED_DY),
+                    PL_BUTTON.offset(WINDOW_BUTTON_DEPRESSED_DX, WINDOW_BUTTON_SELECTED_DY),
+                ],
+                92,
+                85,
+            ),
+            (&[POSBAR_BG, POSBAR_THUMB, POSBAR_THUMB_SELECTED], 307, 10),
+            (
+                &[
+                    VOLUME_FRAME.offset(0, 27 * SLIDER_FRAME_DY),
+                    SLIDER_THUMB,
+                    SLIDER_THUMB_ACTIVE,
+                ],
+                68,
+                433,
+            ),
+            (&[BALANCE_FRAME.offset(0, 27 * SLIDER_FRAME_DY)], 47, 433),
+            (&[STEREO_SELECTED, STEREO, MONO_SELECTED, MONO], 58, 24),
+            (
+                &[
+                    PLAYING_INDICATOR,
+                    PAUSED_INDICATOR,
+                    STOPPED_INDICATOR,
+                    NOT_WORKING_INDICATOR,
+                ],
+                42,
+                9,
+            ),
+            (&[MINUS_SIGN, px(81, 0, DIGIT_W, DIGIT_H)], 99, 13),
+            (&[MINUS_SIGN_EX], 108, 13),
+            (
+                &[
+                    EQ_BG,
+                    EQ_TITLE_BAR,
+                    EQ_TITLE_BAR_SELECTED,
+                    EQ_SLIDER_BG,
+                    EQ_SLIDER_THUMB_SELECTED,
+                    EQ_ON_SELECTED_DEPRESSED,
+                    EQ_AUTO_SELECTED_DEPRESSED,
+                    EQ_GRAPH_BG,
+                    EQ_GRAPH_LINE_COLORS,
+                    EQ_PRESETS_SELECTED,
+                    EQ_PREAMP_LINE,
+                ],
+                275,
+                315,
+            ),
+            (
+                &[
+                    PL_TOP_TILE,
+                    PL_TOP_RIGHT,
+                    PL_TITLE_SELECTED,
+                    PL_LEFT_TILE,
+                    PL_RIGHT_TILE,
+                    PL_BOTTOM_TILE,
+                    PL_BOTTOM_LEFT,
+                    PL_BOTTOM_RIGHT,
+                    PL_SCROLL_HANDLE_SELECTED,
+                    PL_CLOSE_SELECTED,
+                ],
+                280,
+                186,
+            ),
+        ];
+        for (sprites, w, h) in sheets {
+            for s in *sprites {
+                assert!(inside(*s, *w, *h), "{s:?} outside {w}x{h}");
+            }
+        }
+        // Last EQ slider frame (27 → column 13, row 1) stays inside the slider sheet.
+        let last = px(
+            EQ_SLIDER_BG.x + 13 * 15,
+            EQ_SLIDER_BG.y + 65,
+            EQ_BAND_FRAME_W,
+            EQ_BAND_FRAME_H,
+        );
+        assert!(inside(last, 275, 315));
+        assert!(last.x + last.w as i32 <= EQ_SLIDER_BG.x + EQ_SLIDER_BG.w as i32);
+    }
+
+    #[test]
+    fn font_lookup_matches_webamp() {
+        assert_eq!(glyph_cell('A'), (0, 0));
+        assert_eq!(glyph_cell('z'), (0, 25));
+        assert_eq!(glyph_cell('7'), (1, 7));
+        assert_eq!(glyph_cell(':'), (1, 12));
+        assert_eq!(glyph_cell('<'), (1, 22));
+        assert_eq!(glyph_cell('?'), (2, 3));
+        assert_eq!(glyph_cell('é'), (0, 30));
+    }
+}
