@@ -4,6 +4,8 @@ mod command;
 mod config;
 mod event;
 mod extractor;
+#[allow(dead_code)]
+mod gfx;
 mod media;
 mod player;
 mod skin;
@@ -14,6 +16,8 @@ mod theme;
 mod ui;
 #[allow(dead_code)]
 mod view;
+#[allow(dead_code)]
+mod winamp;
 
 use std::sync::Arc;
 use std::time::Duration;

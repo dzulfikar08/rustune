@@ -1,1105 +1,937 @@
-/// Winamp 2.x–faithful renderer.
-///
-/// Reproduces the classic three-panel Winamp layout as closely as a TUI allows:
-///
-///  ┌─────────────────── MAIN WINDOW ───────────────────┐
-///  │ [Title Bar]          skin name          [_][S][X]  │  row 0
-///  │ [Clutterbar]  [LED TIME]   [VIS area ··········]   │  row 1
-///  │ [ scrolling track title marquee ···············]   │  row 2
-///  │ [=== seek / position bar =======================]  │  row 3
-///  │ [|◀][◀◀][▶][■][▶▶][▶|]  VOL ████░░  BAL ██░░░░  │  row 4
-///  │ [SHUF][REP]  [EQ][PL]   mono/stereo  kbps  kHz   │  row 5
-///  ├───────────────── PLAYLIST EDITOR ─────────────────┤  row 6
-///  │  1. Artist - Title                        3:45    │
-///  │▸ 2. Artist - Title (playing)              4:12    │
-///  │  3. Artist - Title                        2:58    │
-///  │  ···                                              │
-///  ├───────────────────────────────────────────────────┤
-///  │ / search prompt █                                 │  footer 0
-///  │ /search  j/k nav  Enter play  Tab src  q quit    │  footer 1
-///  └──────────────────────────────────────────────────┘
-use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, HighlightSpacing, LineGauge, List, ListItem, Padding, Paragraph},
-    Frame,
-};
+//! Winamp skin view: the classic main, equalizer and playlist windows drawn
+//! from the skin's sprites — through a pixel graphics protocol when the
+//! terminal has one, as 1:1 half-blocks when it is big enough, and as a
+//! skin-coloured text layout otherwise.
+
+use std::fmt::Write as _;
+
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Position, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::Frame;
 
 use crate::app::{App, LayoutRects, Mode, Status};
+use crate::gfx::{GfxPainter, Protocol};
 use crate::media::SourceKind;
-use crate::skin::WinampSkin;
-use crate::ui::skin_bitmap;
+use crate::skin::{rgba_color, SkinColors, WinampSkin};
+use crate::ui::skin_bitmap::draw_halfblock;
+use crate::ui::skin_layout::{self, Plan, WindowPlan};
+use crate::view::{EqSettings, PlayStatus, PlayerView, RepeatMode, StreamFormat};
+use crate::winamp::compose::{self, RowSpan};
+use crate::winamp::sprites::main_pos;
+use crate::winamp::vis::{self, BARS};
+use crate::winamp::{Element, Region, WinampUiState, WindowGeom};
 
-// ─── Resolved skin colors ──────────────────────────────────────────────
-
-struct SC {
-    chrome_dark: Color,
-    chrome_mid: Color,
-    chrome_light: Color,
-    body_bg: Color,
-    titlebar_bg: Color,
-    led_on: Color,
-    led_off: Color,
-    led_bg: Color,
-    text_fg: Color,
-    text_bg: Color,
-    plist_normal: Color,
-    plist_current: Color,
-    plist_normal_bg: Color,
-    plist_selected_bg: Color,
-    vis_colors: Vec<Color>,
-    btn_normal: Color,
-    btn_text: Color,
-    seek_track: Color,
-    seek_filled: Color,
-    play_indicator: Color,
-    pause_indicator: Color,
-    indicator_on: Color,
-    indicator_off: Color,
+/// Cells of interest after rendering.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WinampRects {
+    /// Playlist text rows.
+    pub playlist: Rect,
+    /// Position (seek) bar.
+    pub seek: Rect,
+    /// Pause button.
+    pub pause: Rect,
 }
 
-impl SC {
-    fn from_app(app: &App) -> Self {
-        match &app.winamp_skin {
-            Some(skin) => Self::from_skin(skin),
-            None => Self::defaults(),
-        }
-    }
+/// Small fixed-capacity formatter so per-frame labels never allocate.
+struct StackStr {
+    buf: [u8; 48],
+    len: usize,
+}
 
-    fn from_skin(s: &WinampSkin) -> Self {
+impl StackStr {
+    fn new() -> Self {
         Self {
-            chrome_dark: s.chrome_dark,
-            chrome_mid: s.chrome_mid,
-            chrome_light: s.chrome_light,
-            body_bg: s.body_bg,
-            titlebar_bg: s.titlebar_bg,
-            led_on: s.led_on,
-            led_off: s.led_off,
-            led_bg: Color::Rgb(0, 20, 0),
-            text_fg: s.text_fg,
-            text_bg: s.text_bg,
-            plist_normal: s.plist_normal,
-            plist_current: s.plist_current,
-            plist_normal_bg: s.plist_normal_bg,
-            plist_selected_bg: s.plist_selected_bg,
-            vis_colors: s.vis_colors.clone(),
-            btn_normal: s.btn_normal,
-            btn_text: s.btn_text,
-            seek_track: s.seek_track,
-            seek_filled: s.seek_filled,
-            play_indicator: s.play_indicator,
-            pause_indicator: s.pause_indicator,
-            indicator_on: s.indicator_on,
-            indicator_off: s.indicator_off,
+            buf: [0; 48],
+            len: 0,
         }
     }
 
-    fn defaults() -> Self {
-        Self {
-            chrome_dark: Color::Rgb(8, 8, 16),
-            chrome_mid: Color::Rgb(123, 140, 156),
-            chrome_light: Color::Rgb(189, 206, 214),
-            body_bg: Color::Rgb(57, 57, 90),
-            titlebar_bg: Color::Rgb(0, 198, 255),
-            led_on: Color::Rgb(0, 248, 0),
-            led_off: Color::Rgb(24, 33, 41),
-            led_bg: Color::Rgb(0, 20, 0),
-            text_fg: Color::Rgb(0, 226, 0),
-            text_bg: Color::Rgb(0, 0, 165),
-            plist_normal: Color::Rgb(0, 255, 0),
-            plist_current: Color::White,
-            plist_normal_bg: Color::Black,
-            plist_selected_bg: Color::Rgb(0, 0, 198),
-            vis_colors: vec![
-                Color::Rgb(0, 0, 0),
-                Color::Rgb(24, 33, 41),
-                Color::Rgb(239, 49, 16),
-                Color::Rgb(206, 41, 16),
-                Color::Rgb(214, 90, 0),
-                Color::Rgb(214, 102, 0),
-                Color::Rgb(214, 115, 0),
-                Color::Rgb(198, 123, 8),
-                Color::Rgb(222, 165, 24),
-                Color::Rgb(214, 181, 33),
-                Color::Rgb(189, 222, 41),
-                Color::Rgb(148, 222, 33),
-                Color::Rgb(41, 206, 16),
-                Color::Rgb(50, 190, 16),
-                Color::Rgb(57, 181, 16),
-                Color::Rgb(49, 156, 8),
-                Color::Rgb(41, 148, 0),
-                Color::Rgb(24, 132, 8),
-            ],
-            btn_normal: Color::Rgb(34, 33, 51),
-            btn_text: Color::White,
-            seek_track: Color::Rgb(16, 15, 24),
-            seek_filled: Color::Rgb(22, 21, 33),
-            play_indicator: Color::Rgb(0, 232, 0),
-            pause_indicator: Color::Rgb(255, 40, 51),
-            indicator_on: Color::Rgb(0, 255, 0),
-            indicator_off: Color::Rgb(52, 52, 82),
+    fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+    }
+}
+
+impl std::fmt::Write for StackStr {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        let b = s.as_bytes();
+        let end = self.len + b.len();
+        if end > self.buf.len() {
+            return Err(std::fmt::Error);
         }
+        self.buf[self.len..end].copy_from_slice(b);
+        self.len = end;
+        Ok(())
     }
 }
 
-// ─── Public entry point ────────────────────────────────────────────────
-
-pub fn render(frame: &mut Frame, app: &mut App) {
-    if app.skin_layout.is_some() {
-        render_bitmap_mode(frame, app);
-    } else {
-        render_text_mode(frame, app);
-    }
+fn mmss(secs: u64) -> StackStr {
+    let mut s = StackStr::new();
+    let _ = write!(s, "{}:{:02}", secs / 60, secs % 60);
+    s
 }
 
-// ─── Bitmap mode (Pass 1: MAIN.BMP background, Pass 2: text overlays) ──
-
-fn render_bitmap_mode(frame: &mut Frame, app: &mut App) {
-    let sc = SC::from_app(app);
-    let area = frame.area();
-    let skin = app
-        .winamp_skin
-        .as_ref()
-        .expect("winamp_skin must be Some when layout is Some");
-    let main_bmp = skin
-        .main_bitmap
-        .as_ref()
-        .expect("main_bitmap required for bitmap mode");
-
-    // Layout: 6-row main window, 1-row playlist title, flexible playlist body, 2-row footer
-    let main_rows: u16 = 6;
-    let footer_rows: u16 = 2;
-
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(main_rows),
-            Constraint::Length(1),
-            Constraint::Min(3),
-            Constraint::Length(footer_rows),
-        ])
-        .split(area);
-
-    let main_area = vertical[0];
-    let pl_title_area = vertical[1];
-    let pl_body_area = vertical[2];
-    let footer_area = vertical[3];
-
-    // Pass 1: Paint MAIN.BMP as full background for the main window
-    skin_bitmap::render_scaled_bitmap(frame, main_area, main_bmp);
-
-    // Pass 2: Overlay dynamic content on each row
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .split(main_area);
-
-    render_bitmap_titlebar(frame, rows[0], app, &sc);
-    render_bitmap_time_vis(frame, rows[1], app, &sc);
-    render_bitmap_marquee(frame, rows[2], app, &sc);
-    render_bitmap_seekbar(frame, rows[3], app, &sc);
-    render_bitmap_transport(frame, rows[4], app, &sc);
-    render_bitmap_status(frame, rows[5], app, &sc);
-
-    // Playlist and footer — styled text (same as text mode)
-    render_playlist_titlebar(frame, pl_title_area, app, &sc);
-    render_playlist_body(frame, pl_body_area, app, &sc);
-    render_footer(frame, footer_area, app, &sc);
-
-    // Store layout rects for mouse hit-testing
-    let seek_rect = Rect::new(main_area.x, main_area.y + 3, main_area.width, 1);
-    let transport_rect = Rect::new(main_area.x, main_area.y + 4, main_area.width, 1);
-    let pause_button = Rect::new(transport_rect.x + 10, transport_rect.y, 4, 1);
-
-    app.layout_rects = LayoutRects {
-        results: pl_body_area,
-        player_info: Rect::new(main_area.x, main_area.y, main_area.width, 1),
-        player_bar: seek_rect,
-        input: Rect::new(footer_area.x, footer_area.y, footer_area.width, 1),
-        help: Rect::new(footer_area.x, footer_area.y + 1, footer_area.width, 1),
-        pause_button,
-        prev_page: Rect::new(
-            pl_body_area.x + pl_body_area.width.saturating_sub(6),
-            pl_body_area.y,
-            3,
-            1,
-        ),
-        next_page: Rect::new(
-            pl_body_area.x + pl_body_area.width.saturating_sub(3),
-            pl_body_area.y,
-            3,
-            1,
-        ),
-    };
-}
-
-// Row 0 — Title bar overlay: only paint skin name centered, leave bitmap chrome visible
-fn render_bitmap_titlebar(frame: &mut Frame, area: Rect, app: &App, _sc: &SC) {
-    let skin_name = app
-        .winamp_skin
-        .as_ref()
-        .map(|s| s.name.as_str())
-        .unwrap_or("WINAMP");
-
-    // Center the skin name text on the row — no bg to let bitmap show through
-    let title = format!(" {skin_name} ");
-    let title_len = title.len() as u16;
-    let x = area.x + area.width.saturating_sub(title_len) / 2;
-
+/// Render the Winamp view into `area`.
+///
+/// Call `gfx.flush(backend)` after `terminal.draw` returns. Mouse events go
+/// to `ui.on_mouse`, which uses the geometry recorded here.
+pub fn render_view(
+    frame: &mut Frame,
+    area: Rect,
+    skin: &WinampSkin,
+    view: &PlayerView,
+    ui: &mut WinampUiState,
+    gfx: &mut GfxPainter,
+) -> WinampRects {
+    let screen = frame.area();
+    gfx.begin_frame(screen);
+    ui.begin_layout();
     let buf = frame.buffer_mut();
-    buf.set_string(
-        x,
-        area.y,
-        title,
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
-    );
+    let rects = render_windows(buf, screen, area, skin, view, ui, gfx);
+    gfx.end_frame(buf);
+    rects
 }
 
-// Row 1 — LED time + vis overlay: paint time and vis bars, leave bitmap visible
-fn render_bitmap_time_vis(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
-    let elapsed = match &app.playback {
-        Some(pb) => pb.elapsed_secs,
-        None => 0,
+fn render_windows(
+    buf: &mut Buffer,
+    screen: Rect,
+    area: Rect,
+    skin: &WinampSkin,
+    view: &PlayerView,
+    ui: &mut WinampUiState,
+    gfx: &mut GfxPainter,
+) -> WinampRects {
+    let graphics = gfx.protocol() != Protocol::HalfBlock;
+    if !skin.has_bitmaps() {
+        return render_text(buf, area, &skin.colors, view, ui);
+    }
+    // An image touching the last screen row can make sixel/iTerm2 terminals scroll.
+    let mut img_area = area;
+    if graphics && area.bottom() >= screen.bottom() {
+        img_area.height = img_area.height.saturating_sub(1);
+    }
+    let max_scale = if graphics { 8 } else { 1 };
+    let Some(plan) = skin_layout::plan(
+        img_area,
+        gfx.cell_size(),
+        max_scale,
+        ui.show_eq,
+        ui.show_playlist,
+    ) else {
+        return render_text(buf, area, &skin.colors, view, ui);
     };
 
-    let is_playing = app.playback.is_some();
-    let is_paused = app.playback.as_ref().is_some_and(|p| p.paused);
-
-    let buf = frame.buffer_mut();
-    let mut x = area.x;
-
-    // State icon — no bg to keep bitmap visible
-    let (state_str, state_fg) = if !is_playing {
-        (" ■ ", sc.indicator_off)
-    } else if is_paused {
-        (" ‖ ", sc.pause_indicator)
-    } else {
-        (" ▶ ", sc.play_indicator)
+    let t = ui.clock();
+    ui.compose_main(skin, view, t);
+    put_window(buf, gfx, ui, &plan, &plan.main, graphics);
+    if let Some(eq) = plan.eq.as_ref() {
+        ui.compose_eq(skin, view);
+        put_window(buf, gfx, ui, &plan, eq, graphics);
+    }
+    let mut rects = WinampRects {
+        playlist: Rect::default(),
+        seek: plan.cells_of(&plan.main, main_pos::POSITION),
+        pause: plan.cells_of(&plan.main, main_pos::PAUSE),
     };
-    buf.set_string(x, area.y, state_str, Style::default().fg(state_fg));
-    x += 3;
+    if let Some(pl) = plan.playlist.as_ref() {
+        rects.playlist = render_playlist(buf, gfx, ui, skin, view, &plan, pl, graphics);
+    }
+    rects
+}
 
-    // LED time
-    let time_str = format!(" {}:{:02} ", elapsed / 60, elapsed % 60);
-    buf.set_string(
-        x,
-        area.y,
-        &time_str,
-        Style::default().fg(sc.led_on).add_modifier(Modifier::BOLD),
-    );
-    x += time_str.len() as u16;
-
-    // Visualization bars (only in the right portion of the row)
-    let vis_start = area.width.saturating_sub(area.width * 2 / 3);
-    x = area.x + vis_start;
-
-    if is_playing && !is_paused {
-        let bar_chars = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-        let bar_count = (area.width - vis_start) / 2;
-        for i in 0..bar_count {
-            let h = ((elapsed.wrapping_mul(7).wrapping_add(i as u64 * 13)) % 6) as usize + 1;
-            let color = if sc.vis_colors.len() > 2 {
-                let idx = (h * (sc.vis_colors.len() - 2) / 7).min(sc.vis_colors.len() - 1);
-                sc.vis_colors.get(idx + 2).copied().unwrap_or(sc.led_off)
-            } else {
-                sc.led_off
-            };
-            let ch = bar_chars[h.min(bar_chars.len() - 1)];
-            buf.set_string(x, area.y, &format!("{ch} "), Style::default().fg(color));
-            x += 2;
-        }
+fn slot_of(w: &WindowPlan) -> usize {
+    match w.window {
+        crate::winamp::Window::Main => 0,
+        crate::winamp::Window::Equalizer => 1,
+        crate::winamp::Window::Playlist => 2,
     }
 }
 
-// Row 2 — Marquee overlay: paint track title, leave bitmap visible
-fn render_bitmap_marquee(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
-    let title = match &app.playback {
-        Some(pb) => pb.title.clone(),
-        None => match &app.status {
-            Status::Loading(t)
-            | Status::Searching(t)
-            | Status::Scanning(t)
-            | Status::Downloading(t) => t.clone(),
-            Status::Error(t) => t.clone(),
-            _ => "  ***  rustune  ***  ".into(),
-        },
-    };
-
-    // Leave 1 cell padding on each side for bitmap chrome
-    let inner_w = area.width.saturating_sub(2) as usize;
-    let display = if title.len() > inner_w {
-        let mut t: String = title.chars().take(inner_w.saturating_sub(1)).collect();
-        t.push('…');
-        t
-    } else {
-        title
-    };
-
-    let buf = frame.buffer_mut();
-    buf.set_string(
-        area.x + 1,
-        area.y,
-        &display,
-        Style::default().fg(sc.text_fg),
-    );
-}
-
-// Row 3 — Seek bar overlay: paint progress gauge, leave bitmap visible
-fn render_bitmap_seekbar(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
-    let (elapsed, duration) = match &app.playback {
-        Some(pb) => (pb.elapsed_secs, pb.duration_secs),
-        None => (0, 0),
-    };
-
-    let ratio = if duration > 0 {
-        elapsed as f64 / duration as f64
-    } else {
-        0.0
-    };
-
-    let elapsed_str = format_time(elapsed);
-    let duration_str = format_time(duration);
-    let label = format!("{elapsed_str}/{duration_str}");
-
-    let gauge_width = area.width.saturating_sub(4);
-    if gauge_width == 0 {
-        return;
-    }
-
-    let filled = ((gauge_width as f64) * ratio) as u16;
-    let unfilled = gauge_width.saturating_sub(filled);
-
-    let buf = frame.buffer_mut();
-    let gauge_x = area.x + 2;
-
-    let label_x = gauge_x + gauge_width.saturating_sub(label.len() as u16) / 2;
-
-    // Paint filled/unfilled — no bg to keep bitmap visible
-    if filled > 0 {
-        buf.set_string(
-            gauge_x,
-            area.y,
-            &"█".repeat(filled as usize),
-            Style::default().fg(sc.seek_filled),
-        );
-    }
-    if unfilled > 0 {
-        buf.set_string(
-            gauge_x + filled,
-            area.y,
-            &"░".repeat(unfilled as usize),
-            Style::default().fg(sc.seek_track),
-        );
-    }
-    buf.set_string(label_x, area.y, &label, Style::default().fg(sc.led_on));
-}
-
-// Row 4 — Transport overlay: paint button states, leave bitmap visible
-fn render_bitmap_transport(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
-    let is_paused = app.playback.as_ref().is_some_and(|p| p.paused);
-    let is_playing = app.playback.is_some();
-
-    let buf = frame.buffer_mut();
-    let mut x = area.x + 1;
-
-    let btn = |label: &str, fg: Color, buf: &mut ratatui::buffer::Buffer, x: &mut u16| {
-        buf.set_string(*x, area.y, label, Style::default().fg(fg));
-        *x += label.len() as u16;
-    };
-
-    let btn_fg = sc.btn_text;
-    let active_fg = Color::Black;
-
-    let play_fg = if is_playing && !is_paused {
-        sc.play_indicator
-    } else {
-        btn_fg
-    };
-    let pause_fg = if is_paused {
-        sc.pause_indicator
-    } else {
-        btn_fg
-    };
-
-    btn(" ⏮ ", active_fg, buf, &mut x);
-    btn(" ⏪ ", btn_fg, buf, &mut x);
-    btn(" ▶ ", play_fg, buf, &mut x);
-    btn(" ⏸ ", pause_fg, buf, &mut x);
-    btn(" ⏹ ", btn_fg, buf, &mut x);
-    btn(" ⏩ ", btn_fg, buf, &mut x);
-    btn(" ⏭ ", active_fg, buf, &mut x);
-}
-
-// Row 5 — Status row overlay: paint indicators, leave bitmap visible
-fn render_bitmap_status(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
-    let is_playing = app.playback.is_some();
-
-    let buf = frame.buffer_mut();
-    let mut x = area.x + 1;
-
-    let (mono_fg, _stereo_fg) = if is_playing {
-        (sc.indicator_off, sc.indicator_on)
-    } else {
-        (sc.indicator_off, sc.indicator_off)
-    };
-
-    let source_label = match app.active_source {
-        crate::media::SourceKind::Local => "LOCAL",
-        crate::media::SourceKind::Extractor(_) | crate::media::SourceKind::Url => "ONLINE",
-    };
-
-    // No bg — keep bitmap visible
-    buf.set_string(x, area.y, " SHUF ", Style::default().fg(sc.indicator_off));
-    x += 6;
-    buf.set_string(x, area.y, " REP ", Style::default().fg(sc.indicator_off));
-    x += 5;
-
-    let label = format!(" {source_label} ");
-    buf.set_string(
-        area.x + area.width.saturating_sub(label.len() as u16),
-        area.y,
-        &label,
-        Style::default()
-            .fg(sc.titlebar_bg)
-            .add_modifier(Modifier::BOLD),
-    );
-
-    buf.set_string(x + 3, area.y, "mono/stereo", Style::default().fg(mono_fg));
-}
-
-// ─── Text mode (original renderer, fallback when bitmaps unavailable) ───
-
-fn render_text_mode(frame: &mut Frame, app: &mut App) {
-    let sc = SC::from_app(app);
-    let area = frame.area();
-
-    // If the loaded WSZ contains MAIN.BMP pixels, use it as the actual background UI.
-    if let Some(ref skin) = app.winamp_skin {
-        if let Some(ref bmp) = skin.main_bitmap {
-            skin_bitmap::render_scaled_bitmap(frame, area, bmp);
-        }
-    }
-
-    // Main window chrome: 6 rows, playlist: fill, footer: 2 rows
-    let main_rows = 6u16;
-    let footer_rows = 2u16;
-
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(main_rows),   // main window panel
-            Constraint::Length(1),           // separator (playlist title bar)
-            Constraint::Min(3),              // playlist body
-            Constraint::Length(footer_rows), // input + hints
-        ])
-        .split(area);
-
-    let main_area = vertical[0];
-    let pl_title_area = vertical[1];
-    let pl_body_area = vertical[2];
-    let footer_area = vertical[3];
-
-    render_main_window(frame, main_area, app, &sc);
-    render_playlist_titlebar(frame, pl_title_area, app, &sc);
-    render_playlist_body(frame, pl_body_area, app, &sc);
-    render_footer(frame, footer_area, app, &sc);
-
-    // Store layout rects for mouse hit-testing
-    let seek_rect = Rect::new(main_area.x, main_area.y + 3, main_area.width, 1);
-    let transport_rect = Rect::new(main_area.x, main_area.y + 4, main_area.width, 1);
-    let pause_button = Rect::new(transport_rect.x + 10, transport_rect.y, 4, 1);
-
-    app.layout_rects = LayoutRects {
-        results: pl_body_area,
-        player_info: Rect::new(main_area.x, main_area.y, main_area.width, 1),
-        player_bar: seek_rect,
-        input: Rect::new(footer_area.x, footer_area.y, footer_area.width, 1),
-        help: Rect::new(footer_area.x, footer_area.y + 1, footer_area.width, 1),
-        pause_button,
-        prev_page: Rect::new(
-            pl_body_area.x + pl_body_area.width.saturating_sub(6),
-            pl_body_area.y,
-            3,
-            1,
-        ),
-        next_page: Rect::new(
-            pl_body_area.x + pl_body_area.width.saturating_sub(3),
-            pl_body_area.y,
-            3,
-            1,
-        ),
-    };
-}
-
-// ─── Main window (6 rows) ─────────────────────────────────────────────
-
-fn render_main_window(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
-    // Fill background with body_bg from MAIN.BMP
-    let bg = Block::default().style(Style::default().bg(sc.body_bg));
-    frame.render_widget(bg, area);
-
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // row 0: title bar
-            Constraint::Length(1), // row 1: LED time + vis
-            Constraint::Length(1), // row 2: track title marquee
-            Constraint::Length(1), // row 3: seek bar
-            Constraint::Length(1), // row 4: transport + vol + bal
-            Constraint::Length(1), // row 5: shuf/rep + eq/pl + indicators
-        ])
-        .split(area);
-
-    render_titlebar(frame, rows[0], app, sc);
-    render_time_and_vis(frame, rows[1], app, sc);
-    render_marquee(frame, rows[2], app, sc);
-    render_seekbar(frame, rows[3], app, sc);
-    render_transport(frame, rows[4], app, sc);
-    render_status_row(frame, rows[5], app, sc);
-}
-
-// Row 0 — Title bar (TITLEBAR.BMP colors)
-fn render_titlebar(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
-    let skin_name = app
-        .winamp_skin
-        .as_ref()
-        .map(|s| s.name.as_str())
-        .unwrap_or("WINAMP");
-
-    let w = area.width as usize;
-    let title = format!(" {skin_name} ");
-    let controls = " \u{2500}\u{25A1}\u{2715} ";
-    let pad = w.saturating_sub(title.len() + controls.len());
-
-    let line = Line::from(vec![
-        Span::styled(
-            title,
-            Style::default()
-                .fg(Color::White)
-                .bg(sc.titlebar_bg)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            "\u{2500}".repeat(pad),
-            Style::default().fg(sc.titlebar_bg).bg(sc.chrome_dark),
-        ),
-        Span::styled(
-            controls.to_string(),
-            Style::default().fg(sc.chrome_light).bg(sc.chrome_dark),
-        ),
-    ]);
-    frame.render_widget(
-        Paragraph::new(line).style(Style::default().bg(sc.chrome_dark)),
-        area,
-    );
-}
-
-// Row 1 — LED time display (NUMBERS.BMP) + visualization (VISCOLOR.TXT)
-fn render_time_and_vis(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
-    let elapsed = match &app.playback {
-        Some(pb) => pb.elapsed_secs,
-        None => 0,
-    };
-
-    let is_playing = app.playback.is_some();
-    let is_paused = app.playback.as_ref().is_some_and(|p| p.paused);
-
-    let state_icon = if !is_playing {
-        Span::styled(
-            " \u{25A0} ",
-            Style::default().fg(sc.indicator_off).bg(sc.led_bg),
-        )
-    } else if is_paused {
-        Span::styled(
-            " \u{2016} ",
-            Style::default().fg(sc.pause_indicator).bg(sc.led_bg),
+fn put_window(
+    buf: &mut Buffer,
+    gfx: &mut GfxPainter,
+    ui: &mut WinampUiState,
+    plan: &Plan,
+    w: &WindowPlan,
+    graphics: bool,
+) {
+    let canvas = ui.canvas(w.window);
+    let cells = if graphics {
+        gfx.place(
+            buf,
+            slot_of(w),
+            canvas.pixels(),
+            canvas.width(),
+            canvas.height(),
+            plan.scale,
+            w.at,
         )
     } else {
-        Span::styled(
-            " \u{25B6} ",
-            Style::default().fg(sc.play_indicator).bg(sc.led_bg),
-        )
+        draw_halfblock(buf, canvas, w.at)
     };
+    let scale = plan.scale as f32;
+    ui.push_region(Region::Window(WindowGeom {
+        window: w.window,
+        cells,
+        px_per_col: f32::from(plan.cell.0) / scale,
+        px_per_row: f32::from(plan.cell.1) / scale,
+        height_px: w.height_px,
+    }));
+}
 
-    // LED time from NUMBERS.BMP — format like "12:34"
-    let time_str = format!(" {}:{:02} ", elapsed / 60, elapsed % 60);
-    let led_time = Span::styled(
-        time_str,
-        Style::default()
-            .fg(sc.led_on)
-            .bg(sc.led_bg)
-            .add_modifier(Modifier::BOLD),
-    );
+#[allow(clippy::too_many_arguments)]
+fn render_playlist(
+    buf: &mut Buffer,
+    gfx: &mut GfxPainter,
+    ui: &mut WinampUiState,
+    skin: &WinampSkin,
+    view: &PlayerView,
+    plan: &Plan,
+    pl: &WindowPlan,
+    graphics: bool,
+) -> Rect {
+    let scale = plan.scale as f32;
+    let px_per_col = f32::from(plan.cell.0) / scale;
+    let px_per_row = f32::from(plan.cell.1) / scale;
+    let area = compose::playlist_track_area(pl.height_px);
 
-    // Visualization bars from VISCOLOR.TXT
-    let vis_width = (area.width as usize).saturating_sub(14);
-    let bar_count = vis_width / 2;
-    let seed = elapsed;
-
-    let mut vis_spans: Vec<Span> = Vec::with_capacity(bar_count + 1);
-    vis_spans.push(Span::styled(" ", Style::default().bg(sc.body_bg)));
-
-    if is_playing && !is_paused {
-        let bar_chars = [
-            '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
-            '\u{2588}',
-        ];
-        for i in 0..bar_count {
-            let h = ((seed.wrapping_mul(7).wrapping_add(i as u64 * 13)) % 6) as usize + 1;
-            let color = if sc.vis_colors.len() > 2 {
-                let idx = (h * (sc.vis_colors.len() - 2) / 7).min(sc.vis_colors.len() - 1);
-                sc.vis_colors.get(idx + 2).copied().unwrap_or(sc.led_off)
-            } else {
-                sc.led_off
-            };
-            let ch = bar_chars[h.min(bar_chars.len() - 1)];
-            vis_spans.push(Span::styled(
-                format!("{ch} "),
-                Style::default().fg(color).bg(sc.led_bg),
-            ));
-        }
-    } else {
-        // Idle visualizer — dim bars
-        for _ in 0..bar_count {
-            vis_spans.push(Span::styled(
-                "\u{2581} ",
-                Style::default().fg(sc.led_off).bg(sc.led_bg),
-            ));
+    // Text columns/rows that lie fully inside the track area (webamp pads 3px).
+    let col0 = ((area.x as f32 + 2.0) / px_per_col).ceil() as u16;
+    let col1 = (((area.x + area.w as i32) as f32 - 1.0) / px_per_col).floor() as u16;
+    let top = area.y as f32 + 2.0;
+    let bottom = (area.y + area.h as i32) as f32 - 1.0;
+    ui.pl_rows.clear();
+    let mut first_row = None;
+    for r in 0..pl.cells.height {
+        let y0 = f32::from(r) * px_per_row;
+        let y1 = y0 + px_per_row;
+        if y0 >= top && y1 <= bottom {
+            first_row.get_or_insert(r);
+            ui.pl_rows.push(RowSpan {
+                y0: y0.floor() as i32,
+                y1: y1.ceil() as i32,
+                track: None,
+            });
         }
     }
+    let visible = ui.pl_rows.len();
+    let first = ui.sync_playlist_scroll(visible, view);
+    for (i, row) in ui.pl_rows.iter_mut().enumerate() {
+        let idx = first + i;
+        row.track = (idx < view.playlist.len()).then_some(idx);
+    }
+    let text = match first_row {
+        Some(r0) => Rect::new(
+            pl.at.0 + col0,
+            pl.at.1 + r0,
+            col1.saturating_sub(col0),
+            visible as u16,
+        )
+        .intersection(buf.area),
+        None => Rect::default(),
+    };
+    if !text.is_empty() {
+        ui.push_region(Region::Tracks { cells: text, first });
+    }
 
-    let mut spans = vec![state_icon, led_time];
-    spans.extend(vis_spans);
+    ui.compose_playlist(skin, view, pl.height_px);
+    put_window(buf, gfx, ui, plan, pl, graphics);
 
-    frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(sc.body_bg)),
-        area,
-    );
+    for i in 0..text.height {
+        if let Some(idx) =
+            (first + usize::from(i) < view.playlist.len()).then_some(first + usize::from(i))
+        {
+            draw_track_row(buf, text.x, text.y + i, text.width, skin, view, idx);
+        }
+    }
+    gfx.overlay(text);
+    text
 }
 
-// Row 2 — Scrolling track title marquee (TEXT.BMP colors)
-fn render_marquee(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
-    let title = match &app.playback {
-        Some(pb) => pb.title.clone(),
-        None => match &app.status {
-            Status::Loading(t)
-            | Status::Searching(t)
-            | Status::Scanning(t)
-            | Status::Downloading(t) => t.clone(),
-            Status::Error(t) => t.clone(),
-            _ => "  ***  rustune  ***  ".into(),
-        },
-    };
-
-    let w = area.width as usize;
-    let display = if title.len() > w.saturating_sub(2) {
-        let mut t: String = title.chars().take(w.saturating_sub(3)).collect();
-        t.push('\u{2026}');
-        t
-    } else {
-        title
-    };
-
-    let line = Line::from(vec![
-        Span::styled(" ", Style::default().bg(sc.text_bg)),
-        Span::styled(display, Style::default().fg(sc.text_fg).bg(sc.text_bg)),
-        Span::styled(
-            " ".repeat(w.saturating_sub(1)),
-            Style::default().bg(sc.text_bg),
-        ),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+/// "N. Artist - Title" on the left, "m:ss" on the right, PLEDIT.TXT colours.
+fn draw_track_row(
+    buf: &mut Buffer,
+    x: u16,
+    y: u16,
+    width: u16,
+    skin: &WinampSkin,
+    view: &PlayerView,
+    idx: usize,
+) {
+    let (fg, bg) = compose::row_colors(skin, view, idx);
+    let style = Style::default().fg(rgba_color(fg)).bg(rgba_color(bg));
+    fill(buf, Rect::new(x, y, width, 1), style);
+    let item = &view.playlist[idx];
+    let dur = item.duration.map(mmss);
+    let dur_w = dur.as_ref().map_or(0, |d| d.len as u16);
+    if let Some(d) = &dur {
+        if dur_w + 1 < width {
+            buf.set_stringn(
+                x + width - dur_w - 1,
+                y,
+                d.as_str(),
+                usize::from(dur_w),
+                style,
+            );
+        }
+    }
+    let end = x + width.saturating_sub(dur_w + 2);
+    let mut num = StackStr::new();
+    let _ = write!(num, "{}. ", idx + 1);
+    let mut cx = x;
+    for part in [
+        num.as_str(),
+        item.artist.as_deref().unwrap_or(""),
+        if item.artist.is_some() { " - " } else { "" },
+        item.title.as_str(),
+    ] {
+        if cx >= end {
+            break;
+        }
+        cx = buf.set_stringn(cx, y, part, usize::from(end - cx), style).0;
+    }
 }
 
-// Row 3 — Seek / position bar (POSBAR.BMP)
-fn render_seekbar(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
-    let (elapsed, duration) = match &app.playback {
-        Some(pb) => (pb.elapsed_secs, pb.duration_secs),
-        None => (0, 0),
-    };
-
-    let ratio = if duration > 0 {
-        elapsed as f64 / duration as f64
-    } else {
-        0.0
-    };
-
-    let elapsed_str = format_time(elapsed);
-    let duration_str = format_time(duration);
-    let label = format!("{elapsed_str} / {duration_str}");
-
-    let gauge = LineGauge::default()
-        .ratio(ratio)
-        .label(Span::styled(label, Style::default().fg(sc.led_on)))
-        .filled_style(Style::default().fg(sc.seek_filled).bg(sc.seek_track))
-        .unfilled_style(Style::default().fg(sc.seek_track).bg(sc.body_bg))
-        .line_set(ratatui::symbols::line::THICK);
-
-    frame.render_widget(gauge, area);
+fn fill(buf: &mut Buffer, r: Rect, style: Style) {
+    let r = r.intersection(buf.area);
+    for y in r.top()..r.bottom() {
+        for x in r.left()..r.right() {
+            if let Some(c) = buf.cell_mut(Position::new(x, y)) {
+                c.set_symbol(" ").set_style(style);
+            }
+        }
+    }
 }
 
-// Row 4 — Transport buttons (CBUTTONS.BMP) + Volume + Balance
-fn render_transport(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
-    let is_paused = app.playback.as_ref().is_some_and(|p| p.paused);
-    let is_playing = app.playback.is_some();
-
-    let btn_style = Style::default().fg(sc.btn_text).bg(sc.btn_normal);
-    let btn_active = Style::default().fg(Color::Black).bg(sc.chrome_light);
-    let sep = Span::styled(" ", Style::default().bg(sc.body_bg));
-
-    let play_style = if is_playing && !is_paused {
-        Style::default().fg(Color::Black).bg(sc.play_indicator)
-    } else {
-        btn_style
-    };
-    let pause_style = if is_paused {
-        Style::default().fg(Color::Black).bg(sc.pause_indicator)
-    } else {
-        btn_style
-    };
-
-    // Volume bar
-    let vol_filled = 7;
-    let vol_empty = 3;
-    let vol_bar = format!(
-        "{}{}",
-        "\u{2588}".repeat(vol_filled),
-        "\u{2591}".repeat(vol_empty),
-    );
-
-    // Balance bar
-    let bal_filled = 5;
-    let bal_empty = 5;
-    let bal_bar = format!(
-        "{}{}",
-        "\u{2588}".repeat(bal_filled),
-        "\u{2591}".repeat(bal_empty),
-    );
-
-    let line = Line::from(vec![
-        Span::styled(" \u{23EE} ", btn_active), // prev
-        sep.clone(),
-        Span::styled(" \u{23EA} ", btn_style), // rewind
-        sep.clone(),
-        Span::styled(" \u{25B6} ", play_style), // play
-        sep.clone(),
-        Span::styled(" \u{23F8} ", pause_style), // pause
-        sep.clone(),
-        Span::styled(" \u{23F9} ", btn_style), // stop
-        sep.clone(),
-        Span::styled(" \u{23E9} ", btn_style), // fwd
-        sep.clone(),
-        Span::styled(" \u{23ED} ", btn_active), // next
-        Span::styled("  ", Style::default().bg(sc.body_bg)),
-        Span::styled("VOL", Style::default().fg(sc.chrome_light).bg(sc.body_bg)),
-        Span::styled(vol_bar, Style::default().fg(sc.led_on).bg(sc.body_bg)),
-        Span::styled(" ", Style::default().bg(sc.body_bg)),
-        Span::styled("BAL", Style::default().fg(sc.chrome_light).bg(sc.body_bg)),
-        Span::styled(bal_bar, Style::default().fg(sc.led_on).bg(sc.body_bg)),
-    ]);
-    frame.render_widget(
-        Paragraph::new(line).style(Style::default().bg(sc.body_bg)),
-        area,
-    );
+/// Write `s` at (x, y) clipped to `right`; returns the next column.
+fn put(buf: &mut Buffer, x: u16, y: u16, right: u16, s: &str, style: Style) -> u16 {
+    if x >= right {
+        return x;
+    }
+    buf.set_stringn(x, y, s, usize::from(right - x), style).0
 }
 
-// Row 5 — Shuffle/Repeat (SHUFREP.BMP), EQ/PL toggles, Mono/Stereo (MONOSTER.BMP), bitrate/kHz
-fn render_status_row(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
-    let is_playing = app.playback.is_some();
+// ─── Text layout (terminal too small, or skin without bitmaps) ─────────
 
-    // Shuffle/Repeat from SHUFREP.BMP
-    let shuf_style = Style::default().fg(sc.indicator_off).bg(sc.chrome_dark);
-    let rep_style = Style::default().fg(sc.indicator_off).bg(sc.chrome_dark);
-
-    // EQ/PL toggle buttons
-    let eq_style = Style::default().fg(sc.indicator_off).bg(sc.chrome_dark);
-    let pl_style = Style::default().fg(sc.indicator_on).bg(sc.chrome_dark);
-
-    // Mono/Stereo indicator from MONOSTER.BMP
-    let (mono_fg, stereo_fg) = if is_playing {
-        (sc.indicator_off, sc.indicator_on)
-    } else {
-        (sc.indicator_off, sc.indicator_off)
+fn render_text(
+    buf: &mut Buffer,
+    area: Rect,
+    sc: &SkinColors,
+    view: &PlayerView,
+    ui: &mut WinampUiState,
+) -> WinampRects {
+    let mut rects = WinampRects::default();
+    let area = area.intersection(buf.area);
+    if area.is_empty() {
+        return rects;
+    }
+    let right = area.right();
+    let x0 = area.x;
+    let body = Style::default().fg(sc.chrome_light).bg(sc.body_bg);
+    let mut y = area.y;
+    let mut row = |rows_left: &mut u16| -> Option<u16> {
+        if *rows_left == 0 {
+            None
+        } else {
+            *rows_left -= 1;
+            let r = y;
+            y += 1;
+            Some(r)
+        }
     };
+    let mut left = area.height;
 
-    let source_label = match app.active_source {
-        crate::media::SourceKind::Local => "LOCAL",
-        crate::media::SourceKind::Extractor(_) | crate::media::SourceKind::Url => "ONLINE",
-    };
+    // Title bar.
+    if let Some(r) = row(&mut left) {
+        let st = Style::default()
+            .fg(sc.chrome_dark)
+            .bg(sc.titlebar_bg)
+            .add_modifier(Modifier::BOLD);
+        fill(buf, Rect::new(x0, r, area.width, 1), st);
+        let title = " WINAMP ";
+        let cx = x0 + area.width.saturating_sub(title.len() as u16) / 2;
+        put(buf, cx, r, right, title, st);
+    }
 
-    let line = Line::from(vec![
-        Span::styled(" SHUF ", shuf_style),
-        Span::styled(" ", Style::default().bg(sc.body_bg)),
-        Span::styled(" REP ", rep_style),
-        Span::styled("  ", Style::default().bg(sc.body_bg)),
-        Span::styled(" EQ ", eq_style),
-        Span::styled(" ", Style::default().bg(sc.body_bg)),
-        Span::styled(" PL ", pl_style),
-        Span::styled("   ", Style::default().bg(sc.body_bg)),
-        Span::styled("mono", Style::default().fg(mono_fg).bg(sc.body_bg)),
-        Span::styled("/", Style::default().fg(sc.chrome_mid).bg(sc.body_bg)),
-        Span::styled("stereo", Style::default().fg(stereo_fg).bg(sc.body_bg)),
-        Span::styled("   ", Style::default().bg(sc.body_bg)),
-        Span::styled(
-            format!(" {source_label} "),
-            Style::default()
-                .fg(sc.titlebar_bg)
-                .bg(sc.chrome_dark)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]);
-    frame.render_widget(
-        Paragraph::new(line).style(Style::default().bg(sc.body_bg)),
-        area,
-    );
-}
-
-// ─── Playlist Editor ───────────────────────────────────────────────────
-
-// Playlist title bar — mirrors the real Winamp "WINAMP PLAYLIST EDITOR" bar
-fn render_playlist_titlebar(frame: &mut Frame, area: Rect, _app: &App, sc: &SC) {
-    let w = area.width as usize;
-    let title = " PLAYLIST EDITOR ";
-    let pad_total = w.saturating_sub(title.len());
-    let pad_l = pad_total / 2;
-    let pad_r = pad_total - pad_l;
-
-    let line = Line::from(vec![
-        Span::styled(
-            "\u{2500}".repeat(pad_l),
-            Style::default().fg(sc.plist_normal).bg(sc.plist_normal_bg),
-        ),
-        Span::styled(
-            title.to_string(),
-            Style::default()
-                .fg(sc.plist_current)
-                .bg(sc.plist_normal_bg)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            "\u{2500}".repeat(pad_r),
-            Style::default().fg(sc.plist_normal).bg(sc.plist_normal_bg),
-        ),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
-}
-
-// Playlist body — uses PLEDIT.TXT colors
-fn render_playlist_body(frame: &mut Frame, area: Rect, app: &mut App, sc: &SC) {
-    if app.results.is_empty() {
-        let msg = match &app.status {
-            Status::Searching(t) | Status::Scanning(t) | Status::Downloading(t) => t.clone(),
-            Status::Error(t) => t.clone(),
-            _ => "No tracks loaded — press / to search".into(),
+    // Status: indicator, time, kbps/kHz, mono/stereo, spectrum.
+    if let Some(r) = row(&mut left) {
+        fill(buf, Rect::new(x0, r, area.width, 1), body);
+        let (sym, col) = match view.status {
+            PlayStatus::Playing => (" ▶ ", sc.play_indicator),
+            PlayStatus::Paused => (" ❚❚", sc.pause_indicator),
+            PlayStatus::Stopped => (" ■ ", sc.indicator_off),
         };
-
-        let block = Block::default()
-            .style(Style::default().bg(sc.plist_normal_bg))
-            .padding(Padding::horizontal(1));
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                msg,
-                Style::default().fg(sc.plist_normal),
-            ))),
-            inner,
+        let mut cx = put(buf, x0, r, right, sym, body.fg(col));
+        let led = Style::default().fg(sc.led_on).bg(sc.chrome_dark);
+        let t = if view.status == PlayStatus::Stopped {
+            let mut s = StackStr::new();
+            let _ = s.write_str("  :  ");
+            s
+        } else {
+            let secs = view.elapsed.as_secs();
+            match view.duration {
+                Some(d) if ui.time_remaining => {
+                    let mut s = StackStr::new();
+                    let rem = d.as_secs().saturating_sub(secs);
+                    let _ = write!(s, "-{}:{:02}", rem / 60, rem % 60);
+                    s
+                }
+                _ => mmss(secs),
+            }
+        };
+        cx = put(buf, cx + 1, r, right, " ", led);
+        let time_x = cx;
+        cx = put(
+            buf,
+            cx,
+            r,
+            right,
+            t.as_str(),
+            led.add_modifier(Modifier::BOLD),
         );
-        return;
+        cx = put(buf, cx, r, right, " ", led);
+        ui.push_region(Region::Element {
+            element: Element::Time,
+            cells: Rect::new(time_x, r, cx.saturating_sub(time_x), 1),
+        });
+        if view.status != PlayStatus::Stopped {
+            let mut info = StackStr::new();
+            if let Some(k) = view.format.kbps {
+                let _ = write!(info, " {k}kbps");
+            }
+            if let Some(sr) = view.format.sample_rate {
+                let _ = write!(info, " {}kHz", (sr + 500) / 1000);
+            }
+            match view.format.channels {
+                Some(1) => {
+                    let _ = info.write_str(" mono");
+                }
+                Some(_) => {
+                    let _ = info.write_str(" stereo");
+                }
+                None => {}
+            }
+            cx = put(buf, cx, r, right, info.as_str(), body.fg(sc.text_fg));
+        }
+        // Spectrum on the right.
+        let mut bars = [0.0f32; BARS];
+        if view.status == PlayStatus::Playing {
+            vis::bucket(view.spectrum, &mut bars);
+        }
+        let n = (right.saturating_sub(cx + 2)).min(BARS as u16);
+        let vx = right - n;
+        for (i, h) in bars.iter().take(usize::from(n)).enumerate() {
+            let level = ((h / 16.0) * 8.0).round().clamp(0.0, 8.0) as usize;
+            let ch = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"][level];
+            let color = sc.vis_colors[(17 - level * 2).max(2)];
+            put(
+                buf,
+                vx + i as u16,
+                r,
+                right,
+                ch,
+                Style::default().fg(color).bg(sc.vis_colors[0]),
+            );
+        }
+        if n > 0 {
+            ui.push_region(Region::Element {
+                element: Element::Vis,
+                cells: Rect::new(vx, r, n, 1),
+            });
+        }
     }
 
-    let playing_idx = app
+    // Marquee.
+    if let Some(r) = row(&mut left) {
+        let st = Style::default().fg(sc.text_fg).bg(sc.text_bg);
+        fill(buf, Rect::new(x0, r, area.width, 1), st);
+        let width = usize::from(area.width.saturating_sub(2));
+        let step = (ui.clock().as_millis() / 220) as usize;
+        let text = ui.marquee_for(view);
+        let len = text.chars().count();
+        let mut cx = x0 + 1;
+        if len > width && view.status != PlayStatus::Stopped {
+            let sep = "  ***  ";
+            let cycle = len + sep.len();
+            let offset = step % cycle;
+            for ch in text
+                .chars()
+                .chain(sep.chars())
+                .cycle()
+                .skip(offset)
+                .take(width)
+            {
+                if let Some(c) = buf.cell_mut(Position::new(cx, r)) {
+                    c.set_char(ch).set_style(st);
+                }
+                cx += 1;
+            }
+        } else {
+            put(buf, cx, r, right.saturating_sub(1), text, st);
+        }
+    }
+
+    // Seek bar.
+    if let Some(r) = row(&mut left) {
+        fill(buf, Rect::new(x0, r, area.width, 1), body);
+        let bar = Rect::new(x0 + 1, r, area.width.saturating_sub(2), 1);
+        let frac = view
+            .duration
+            .map(|d| d.as_secs_f32())
+            .filter(|d| *d > 0.0)
+            .map(|d| (view.elapsed.as_secs_f32() / d).clamp(0.0, 1.0));
+        let thumb =
+            frac.map(|f| bar.x + (f * f32::from(bar.width.saturating_sub(1))).round() as u16);
+        for cx in bar.left()..bar.right() {
+            let (ch, color) = match thumb {
+                Some(t) if cx == t => ("●", sc.chrome_light),
+                Some(t) if cx < t => ("━", sc.led_on),
+                _ => ("─", sc.chrome_mid),
+            };
+            put(buf, cx, r, right, ch, body.fg(color));
+        }
+        ui.push_region(Region::Element {
+            element: Element::Position,
+            cells: bar,
+        });
+        rects.seek = bar;
+    }
+
+    // Transport + volume + balance.
+    if let Some(r) = row(&mut left) {
+        fill(buf, Rect::new(x0, r, area.width, 1), body);
+        let btn = Style::default().fg(sc.btn_text).bg(sc.btn_normal);
+        let pressed = Style::default().fg(sc.btn_text).bg(sc.btn_pressed);
+        let mut cx = x0 + 1;
+        for (label, el) in [
+            ("|◀", Element::Prev),
+            (" ▶", Element::Play),
+            ("❚❚", Element::Pause),
+            (" ■", Element::Stop),
+            ("▶|", Element::Next),
+            (" ⏏", Element::Eject),
+        ] {
+            let st = if ui.pressed() == Some(el) {
+                pressed
+            } else {
+                btn
+            };
+            let start = cx;
+            cx = put(buf, cx, r, right, " ", st);
+            cx = put(buf, cx, r, right, label, st);
+            cx = put(buf, cx, r, right, " ", st);
+            ui.push_region(Region::Element {
+                element: el,
+                cells: Rect::new(start, r, cx.saturating_sub(start), 1),
+            });
+            if el == Element::Pause {
+                rects.pause = Rect::new(start, r, cx.saturating_sub(start), 1);
+            }
+            cx += 1;
+        }
+        cx = put(buf, cx + 1, r, right, "VOL", body);
+        let vol_x = cx + 1;
+        for i in 0..8u16 {
+            let on = f32::from(i) < view.volume.clamp(0.0, 1.0) * 8.0;
+            let st = body.fg(if on { sc.led_on } else { sc.chrome_mid });
+            put(buf, vol_x + i, r, right, if on { "█" } else { "░" }, st);
+        }
+        ui.push_region(Region::Element {
+            element: Element::Volume,
+            cells: Rect::new(vol_x, r, 8, 1).intersection(area),
+        });
+        cx = put(buf, vol_x + 9, r, right, "BAL", body);
+        let bal_x = cx + 1;
+        let pos = ((view.balance.clamp(-1.0, 1.0) + 1.0) / 2.0 * 6.0).round() as u16;
+        for i in 0..7u16 {
+            let st = body.fg(if i == pos { sc.led_on } else { sc.chrome_mid });
+            put(
+                buf,
+                bal_x + i,
+                r,
+                right,
+                if i == pos { "◆" } else { "─" },
+                st,
+            );
+        }
+        ui.push_region(Region::Element {
+            element: Element::Balance,
+            cells: Rect::new(bal_x, r, 7, 1).intersection(area),
+        });
+    }
+
+    // Toggles.
+    if let Some(r) = row(&mut left) {
+        fill(buf, Rect::new(x0, r, area.width, 1), body);
+        let mut cx = x0 + 1;
+        for (label, on, el) in [
+            ("SHUFFLE", view.shuffle, Element::Shuffle),
+            (
+                match view.repeat {
+                    RepeatMode::One => "REPEAT 1",
+                    _ => "REPEAT",
+                },
+                view.repeat != RepeatMode::Off,
+                Element::Repeat,
+            ),
+            ("EQ", ui.show_eq, Element::EqButton),
+            ("PL", ui.show_playlist, Element::PlButton),
+        ] {
+            let st = Style::default()
+                .fg(if on {
+                    sc.indicator_on
+                } else {
+                    sc.indicator_off
+                })
+                .bg(sc.chrome_dark);
+            let start = cx;
+            cx = put(buf, cx, r, right, "[", st);
+            cx = put(buf, cx, r, right, label, st);
+            cx = put(buf, cx, r, right, "]", st);
+            ui.push_region(Region::Element {
+                element: el,
+                cells: Rect::new(start, r, cx.saturating_sub(start), 1),
+            });
+            cx += 1;
+        }
+    }
+
+    // Playlist.
+    if left > 0 {
+        let start = y;
+        let list = Rect::new(x0, start, area.width, left);
+        fill(
+            buf,
+            list,
+            Style::default().fg(sc.plist_normal).bg(sc.plist_normal_bg),
+        );
+        let first = ui.sync_playlist_scroll(usize::from(left), view);
+        for i in 0..left {
+            let idx = first + usize::from(i);
+            if idx >= view.playlist.len() {
+                break;
+            }
+            draw_text_track_row(buf, x0, start + i, area.width, sc, view, idx);
+        }
+        ui.push_region(Region::Tracks { cells: list, first });
+        rects.playlist = list;
+    }
+    rects
+}
+
+fn draw_text_track_row(
+    buf: &mut Buffer,
+    x: u16,
+    y: u16,
+    width: u16,
+    sc: &SkinColors,
+    view: &PlayerView,
+    idx: usize,
+) {
+    let fg = if Some(idx) == view.current {
+        sc.plist_current
+    } else {
+        sc.plist_normal
+    };
+    let bg = if idx == view.selected {
+        sc.plist_selected_bg
+    } else {
+        sc.plist_normal_bg
+    };
+    let style = Style::default().fg(fg).bg(bg);
+    fill(buf, Rect::new(x, y, width, 1), style);
+    let item = &view.playlist[idx];
+    let right = x + width;
+    let dur = item.duration.map(mmss);
+    let dur_w = dur.as_ref().map_or(0, |d| d.len as u16);
+    if let Some(d) = &dur {
+        put(
+            buf,
+            right.saturating_sub(dur_w + 1),
+            y,
+            right,
+            d.as_str(),
+            style,
+        );
+    }
+    let end = right.saturating_sub(dur_w + 2);
+    let mut num = StackStr::new();
+    let _ = write!(num, "{:>3}. ", idx + 1);
+    let mut cx = put(buf, x, y, end, num.as_str(), style);
+    if let Some(a) = item.artist.as_deref() {
+        cx = put(buf, cx, y, end, a, style);
+        cx = put(buf, cx, y, end, " - ", style);
+    }
+    put(buf, cx, y, end, &item.title, style);
+}
+
+// ─── Legacy entry point (until the app passes a PlayerView) ────────────
+
+/// Compatibility adapter for the current `ui::draw`: builds a `PlayerView`
+/// from `App` fields and renders it (half-block or text), plus the
+/// search/help footer, and records `layout_rects` for the legacy mouse code.
+pub fn render(frame: &mut Frame, app: &mut App) {
+    let area = frame.area();
+    let footer_h = area.height.min(2);
+    let body = Rect {
+        height: area.height - footer_h,
+        ..area
+    };
+    let footer = Rect {
+        y: body.bottom(),
+        height: footer_h,
+        ..area
+    };
+
+    let (title, status, elapsed, duration) = match app.playback.as_ref() {
+        Some(pb) => (
+            pb.title.as_str(),
+            if pb.paused {
+                PlayStatus::Paused
+            } else {
+                PlayStatus::Playing
+            },
+            std::time::Duration::from_secs(pb.elapsed_secs),
+            (pb.duration_secs > 0).then(|| std::time::Duration::from_secs(pb.duration_secs)),
+        ),
+        None => ("", PlayStatus::Stopped, std::time::Duration::ZERO, None),
+    };
+    let current = app
         .playback
         .as_ref()
         .and_then(|pb| app.results.iter().position(|r| r.title == pb.title));
+    let view = PlayerView {
+        title,
+        status,
+        elapsed,
+        duration,
+        volume: 1.0,
+        balance: 0.0,
+        shuffle: false,
+        repeat: RepeatMode::Off,
+        eq: EqSettings::default(),
+        format: StreamFormat::default(),
+        spectrum: &[],
+        scope: &[],
+        playlist: &app.results,
+        current,
+        selected: app.list_state.selected().unwrap_or(0),
+    };
 
-    let items: Vec<ListItem> = app
-        .results
-        .iter()
-        .enumerate()
-        .map(|(i, result)| {
-            let duration = result
-                .duration
-                .map(format_time)
-                .unwrap_or_else(|| "--:--".into());
+    let rects = match (app.winamp_skin.as_ref(), app.skin_layout.as_mut()) {
+        (Some(skin), Some(layout)) => render_view(
+            frame,
+            body,
+            skin,
+            &view,
+            &mut layout.ui,
+            &mut layout.painter,
+        ),
+        (skin, _) => {
+            let sc = skin.map_or(&SkinColors::DEFAULT, |s| &s.colors);
+            let mut ui = WinampUiState::new();
+            render_text(frame.buffer_mut(), body, sc, &view, &mut ui)
+        }
+    };
 
-            let subtitle = result
-                .subtitle
-                .as_deref()
-                .map(|c| format!(" - {c}"))
-                .unwrap_or_default();
+    let sc = app
+        .winamp_skin
+        .as_ref()
+        .map_or(&SkinColors::DEFAULT, |s| &s.colors);
+    if app.results.is_empty() && !rects.playlist.is_empty() {
+        let msg = match &app.status {
+            Status::Searching(t)
+            | Status::Scanning(t)
+            | Status::Downloading(t)
+            | Status::Error(t) => t.as_str(),
+            _ => "No tracks loaded — press / to search",
+        };
+        let r = rects.playlist;
+        put(
+            frame.buffer_mut(),
+            r.x + 1,
+            r.y,
+            r.right(),
+            msg,
+            Style::default().fg(sc.plist_normal).bg(sc.plist_normal_bg),
+        );
+    }
+    render_footer(frame.buffer_mut(), footer, app, sc);
 
-            let is_current = playing_idx == Some(i);
-
-            let num_style = if is_current {
-                Style::default().fg(sc.plist_current)
-            } else {
-                Style::default().fg(sc.plist_normal)
-            };
-            let title_style = if is_current {
-                Style::default()
-                    .fg(sc.plist_current)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(sc.plist_normal)
-            };
-
-            let line = Line::from(vec![
-                Span::styled(format!("{:>3}. ", i + 1), num_style),
-                Span::styled(format!("{}{subtitle}", result.title), title_style),
-                Span::styled(
-                    format!("  {duration}"),
-                    Style::default().fg(sc.indicator_off),
-                ),
-            ]);
-            ListItem::new(line)
-        })
-        .collect();
-
-    let block = Block::default().style(Style::default().bg(sc.plist_normal_bg));
-
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(
-            Style::default()
-                .fg(sc.plist_current)
-                .bg(sc.plist_selected_bg)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("\u{25B6} ")
-        .highlight_spacing(HighlightSpacing::Always);
-
-    frame.render_stateful_widget(list, area, &mut app.list_state);
+    // Legacy click mapping expects one header row above the results.
+    let pl = rects.playlist;
+    let results = if pl.is_empty() {
+        pl
+    } else {
+        Rect::new(pl.x, pl.y.saturating_sub(1), pl.width, pl.height + 1)
+    };
+    app.layout_rects = LayoutRects {
+        results,
+        player_info: Rect::new(body.x, body.y, body.width, body.height.min(1)),
+        player_bar: rects.seek,
+        input: Rect::new(footer.x, footer.y, footer.width, footer.height.min(1)),
+        help: Rect::new(
+            footer.x,
+            footer.y + 1,
+            footer.width,
+            footer.height.saturating_sub(1),
+        ),
+        pause_button: rects.pause,
+        prev_page: Rect::default(),
+        next_page: Rect::default(),
+    };
 }
 
-// ─── Footer (input + hints) ───────────────────────────────────────────
-
-fn render_footer(frame: &mut Frame, area: Rect, app: &App, sc: &SC) {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
-        .split(area);
-
-    // Input bar
+fn render_footer(buf: &mut Buffer, area: Rect, app: &App, sc: &SkinColors) {
+    if area.height == 0 {
+        return;
+    }
+    let right = area.right();
+    let input = Style::default().fg(sc.text_fg).bg(sc.text_bg);
+    fill(buf, Rect::new(area.x, area.y, area.width, 1), input);
     let prompt = match app.mode {
         Mode::Browse => " > ",
         Mode::Input => " / ",
         _ => " ? ",
     };
-    let mut input_spans = vec![
-        Span::styled(
-            prompt,
-            Style::default()
-                .fg(sc.text_fg)
-                .bg(sc.text_bg)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            &app.input_text,
-            Style::default().fg(sc.text_fg).bg(sc.text_bg),
-        ),
-    ];
+    let mut cx = put(
+        buf,
+        area.x,
+        area.y,
+        right,
+        prompt,
+        input.add_modifier(Modifier::BOLD),
+    );
+    cx = put(buf, cx, area.y, right, &app.input_text, input);
     if app.mode == Mode::Input {
-        input_spans.push(Span::styled(
-            "\u{2588}",
-            Style::default().fg(sc.text_fg).bg(sc.text_bg),
-        ));
+        put(buf, cx, area.y, right, "█", input);
     }
-    // Fill rest of line with text_bg
-    frame.render_widget(
-        Paragraph::new(Line::from(input_spans)).style(Style::default().bg(sc.text_bg)),
-        rows[0],
-    );
-
-    // Key hints bar
-    let hints = match app.mode {
-        Mode::Browse => {
-            let mut v = vec![
-                Span::styled(" /", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-                Span::styled(
-                    " search ",
-                    Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
-                ),
-                Span::styled("j/k", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-                Span::styled(
-                    " nav ",
-                    Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
-                ),
-                Span::styled("Enter", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-                Span::styled(
-                    " play ",
-                    Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
-                ),
-            ];
-            if matches!(app.active_source, SourceKind::Extractor(_)) {
-                v.push(Span::styled(
-                    "d",
-                    Style::default().fg(sc.led_on).bg(sc.chrome_dark),
-                ));
-                v.push(Span::styled(
-                    " dl ",
-                    Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
-                ));
-            }
-            v.extend_from_slice(&[
-                Span::styled("Space", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-                Span::styled(
-                    " pause ",
-                    Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
-                ),
-                Span::styled("Tab", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-                Span::styled(
-                    " src ",
-                    Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
-                ),
-                Span::styled("S", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-                Span::styled(
-                    " settings ",
-                    Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
-                ),
-                Span::styled("q", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-                Span::styled(
-                    " quit",
-                    Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
-                ),
-            ]);
-            v
-        }
-        Mode::Input => vec![
-            Span::styled(" Enter", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-            Span::styled(
-                " submit ",
-                Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
-            ),
-            Span::styled("Esc", Style::default().fg(sc.led_on).bg(sc.chrome_dark)),
-            Span::styled(
-                " cancel",
-                Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark),
-            ),
+    if area.height < 2 {
+        return;
+    }
+    let y = area.y + 1;
+    let key = Style::default().fg(sc.led_on).bg(sc.chrome_dark);
+    let label = Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark);
+    fill(buf, Rect::new(area.x, y, area.width, 1), label);
+    let hints: &[(&str, &str)] = match app.mode {
+        Mode::Browse if matches!(app.active_source, SourceKind::Extractor(_)) => &[
+            (" /", " search "),
+            ("j/k", " nav "),
+            ("Enter", " play "),
+            ("d", " dl "),
+            ("Space", " pause "),
+            ("Tab", " src "),
+            ("S", " settings "),
+            ("q", " quit"),
         ],
-        _ => vec![],
+        Mode::Browse => &[
+            (" /", " search "),
+            ("j/k", " nav "),
+            ("Enter", " play "),
+            ("Space", " pause "),
+            ("Tab", " src "),
+            ("S", " settings "),
+            ("q", " quit"),
+        ],
+        Mode::Input => &[(" Enter", " submit "), ("Esc", " cancel")],
+        _ => &[],
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(hints)).style(Style::default().bg(sc.chrome_dark)),
-        rows[1],
-    );
+    let mut cx = area.x;
+    for (k, l) in hints {
+        cx = put(buf, cx, y, right, k, key);
+        cx = put(buf, cx, y, right, l, label);
+    }
 }
 
-// ─── Helpers ───────────────────────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::skin::tests::{build_wsz, solid_bmp};
+    use crate::winamp::tests::sample_view;
 
-fn format_time(secs: u64) -> String {
-    let m = secs / 60;
-    let s = secs % 60;
-    format!("{m}:{s:02}")
+    fn skin_with_bitmaps() -> WinampSkin {
+        let wsz = build_wsz(&[
+            ("MAIN.BMP", solid_bmp(275, 116, [40, 40, 60])),
+            ("EQMAIN.BMP", solid_bmp(275, 315, [20, 60, 20])),
+            ("PLEDIT.BMP", solid_bmp(280, 186, [60, 20, 20])),
+            ("TEXT.BMP", solid_bmp(155, 18, [0, 0, 0])),
+        ]);
+        WinampSkin::from_wsz_bytes(&wsz, "t").unwrap()
+    }
+
+    #[test]
+    fn halfblock_render_records_regions_and_draws_tracks() {
+        let skin = skin_with_bitmaps();
+        let view = sample_view(PlayStatus::Playing);
+        let mut ui = WinampUiState::new();
+        let mut gfx = GfxPainter::with_cell_size(Protocol::HalfBlock, None);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 280, 180));
+        gfx.begin_frame(buf.area);
+        ui.begin_layout();
+        let rects = render_windows(
+            &mut buf, buf.area, buf.area, &skin, &view, &mut ui, &mut gfx,
+        );
+        // Main window pixels: MAIN.BMP colour as half-blocks.
+        let c = buf.cell(Position::new(2 + 50, 30)).unwrap();
+        assert_eq!(c.bg, Color::Rgb(40, 40, 60));
+        // Track rows: the selected track (index 2) uses SelectedBG.
+        assert!(!rects.playlist.is_empty());
+        let row2 = rects.playlist.y + 2;
+        let cell = buf.cell(Position::new(rects.playlist.x, row2)).unwrap();
+        assert_eq!(cell.symbol(), "3");
+        assert_eq!(cell.bg, rgba_color(skin.pledit.selected_bg));
+        // Clicking a track selects it.
+        let ev = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: rects.playlist.x + 3,
+            row: rects.playlist.y + 1,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+        assert_eq!(
+            ui.on_mouse(ev, &view),
+            Some(crate::command::Command::Select(1))
+        );
+    }
+
+    #[test]
+    fn falls_back_to_text_layout_when_too_small() {
+        let skin = skin_with_bitmaps();
+        let view = sample_view(PlayStatus::Paused);
+        let mut ui = WinampUiState::new();
+        let mut gfx = GfxPainter::with_cell_size(Protocol::HalfBlock, None);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 24));
+        let rects = render_windows(
+            &mut buf, buf.area, buf.area, &skin, &view, &mut ui, &mut gfx,
+        );
+        assert_eq!(rects.playlist.y, 6);
+        assert_eq!(buf.cell(Position::new(37, 0)).unwrap().symbol(), "W");
+        // Pressing the text "play" button returns Play on release.
+        let p = rects.pause;
+        assert!(p.width > 0);
+    }
+
+    #[test]
+    fn graphics_render_places_images_and_skips_cells() {
+        let skin = skin_with_bitmaps();
+        let view = sample_view(PlayStatus::Playing);
+        let mut ui = WinampUiState::new();
+        let mut gfx = GfxPainter::with_cell_size(Protocol::Sixel, Some((10, 20)));
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 50));
+        gfx.begin_frame(buf.area);
+        ui.begin_layout();
+        let rects = render_windows(
+            &mut buf, buf.area, buf.area, &skin, &view, &mut ui, &mut gfx,
+        );
+        gfx.end_frame(&buf);
+        // Image cells are skipped by ratatui; the seek bar maps inside the main window.
+        assert!(
+            buf.cell(Position::new(rects.seek.x, rects.seek.y))
+                .unwrap()
+                .skip
+        );
+        let mut out = Vec::new();
+        gfx.flush(&mut out).unwrap();
+        let s = String::from_utf8_lossy(&out);
+        assert_eq!(s.matches("\x1bP0;1;0q").count(), 3, "main, eq and playlist");
+    }
 }

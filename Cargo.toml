@@ -27,6 +27,9 @@ rodio = { version = "0.22", features = [
 ureq = { version = "3", features = ["json"] }
 quick-xml = "0.38"
 md-5 = "0.10"
+# zlib for kitty graphics payloads and the PNG encoder (iTerm2, skin previews);
+# already in the tree via zip, default miniz_oxide backend.
+flate2 = "1"
 
 [profile.release]
 lto = "fat"
