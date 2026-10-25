@@ -22,6 +22,7 @@ A lightweight terminal music player: a single small binary with no mpv or other 
 - **Playlists** — load and save `.m3u` / `.pls`
 - **Session restore** — volume, balance, EQ, shuffle/repeat, visualizer, queue and resume position
 - **Themes** — Dark, Light and Winamp; full mouse support
+- **Remote control** — `rustune next`, `rustune status --json`, `rustune watch`, … over a local socket; a headless `--daemon` mode; `rustune FILE` queues into the running player instead of starting a second one
 
 ## Screenshots
 
@@ -106,7 +107,8 @@ rustune [FILE|DIR|URL|PLAYLIST]...
 | Command | Description |
 |---------|-------------|
 | `rustune` | Launch the TUI (restores the last session) |
-| `rustune FILE\|DIR\|URL\|PLAYLIST...` | Replace the queue with the given items and play. Directories are scanned recursively; URLs may be http(s) streams or YouTube links (via yt-dlp); playlists are `.m3u` / `.m3u8` / `.pls` |
+| `rustune FILE\|DIR\|URL\|PLAYLIST...` | Replace the queue with the given items and play. Directories are scanned recursively; URLs may be http(s) streams or YouTube links (via yt-dlp); playlists are `.m3u` / `.m3u8` / `.pls`. If rustune is already running, the items are appended to its queue instead |
+| `rustune --daemon [ITEM...]` | Run without a terminal UI (same engine, queue and session state), controlled with the commands below; SIGINT/SIGTERM save the session and exit |
 | `rustune doctor` | Check optional tools and paths |
 | `rustune --help` | Show help |
 | `rustune --version` | Show version |
@@ -207,6 +209,36 @@ rustune [FILE|DIR|URL|PLAYLIST]...
 #### Mouse
 
 Click a row to play it, use the wheel to scroll, and click the progress bar to seek. In Winamp mode every skin button and slider works with click and drag.
+
+### Remote control
+
+A running player (TUI or `--daemon`) listens on a local control socket: `$XDG_RUNTIME_DIR/rustune.sock`, falling back to the config directory (mode `0600`), or the named pipe `\\.\pipe\rustune` on Windows. `RUSTUNE_SOCKET` overrides the path, e.g. to run two instances. A socket left behind by a crash is detected and replaced.
+
+| Command | Action |
+|---------|--------|
+| `rustune play` / `pause` / `toggle` / `stop` / `next` / `prev` | Transport |
+| `rustune status [--json]` | Now playing, time, volume, balance, shuffle, repeat, EQ, queue position |
+| `rustune volume 0-100\|+N\|-N` | Set or change the volume (percent) |
+| `rustune seek SECS\|MM:SS\|+N\|-N` | Jump to a position or skip N seconds |
+| `rustune shuffle` | Toggle shuffle |
+| `rustune repeat [off\|all\|one]` | Set the repeat mode (cycle without an argument) |
+| `rustune eq PRESET\|on\|off\|toggle` | Apply a preset (turns the EQ on), or switch the EQ |
+| `rustune queue ITEM...` | Append files, directories, playlists or URLs |
+| `rustune watch` | Print a JSON status line on every change |
+| `rustune quit` | Stop the running instance |
+
+The commands exit with status 1 and a message when no instance is running. The protocol is newline-delimited JSON, one object per line, so scripts can talk to the socket directly (e.g. `socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/rustune.sock`):
+
+```text
+{"cmd":"toggle_pause"}                      → {"ok":true}
+{"cmd":"set_volume","arg":0.5}              → {"ok":true}
+{"cmd":"enqueue","arg":["/music/a.flac"]}   → {"ok":true}
+{"get":"status"}                            → {"status":"playing","title":"…","artist":"…","album":"…","elapsed":42,"duration":215,"volume":50,"balance":0,"shuffle":false,"repeat":"off","eq_enabled":true,"queue_length":12,"queue_index":3}
+{"subscribe":true}                          → the status object now and after every change
+{"cmd":"dance"}                             → {"error":"bad command: …"}
+```
+
+`cmd` names are the player commands in snake case (`play`, `pause`, `toggle_pause`, `stop`, `next`, `prev`, `seek_by`, `seek_frac`, `set_volume`, `volume_by`, `set_balance`, `toggle_shuffle`, `cycle_repeat`, `set_repeat`, `toggle_eq`, `eq_preset`, `set_eq_band`, `set_preamp`, `play_index`, `enqueue`, `quit`, …) with any argument in `arg`. A command is answered once the player has applied it.
 
 ## Configuration
 

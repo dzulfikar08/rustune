@@ -4,30 +4,50 @@
 use crate::config;
 use crate::extractor;
 use crate::install::{self, Dep, DepStatus};
+use crate::ipc::client::{self as remote, Remote};
 use crate::library;
 use crate::media::{MediaItem, SourceKind};
 use crate::playlist_io;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub enum Cli {
     Help,
     Version,
     Doctor,
-    /// Launch the TUI; non-empty `inputs` replace the queue and autoplay.
+    /// Launch the TUI; non-empty `inputs` replace the queue and autoplay
+    /// (or are queued in an instance that is already running).
     Run {
         inputs: Vec<String>,
     },
+    /// `--daemon`: no TUI, controlled over IPC.
+    Daemon {
+        inputs: Vec<String>,
+    },
+    /// `play`, `status`, `volume 50`, ...: talk to the running instance.
+    Remote(Remote),
 }
 
 pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
     let mut inputs = Vec::new();
     let mut only_inputs = false;
+    let mut daemon = false;
     let mut args = args.into_iter().peekable();
     if args.peek().map(String::as_str) == Some("doctor") {
         return match args.nth(1) {
             None => Ok(Cli::Doctor),
             Some(extra) => Err(format!("unexpected argument after 'doctor': {extra}")),
         };
+    }
+    if let Some(name) = args
+        .peek()
+        .filter(|a| remote::SUBCOMMANDS.contains(&a.as_str()))
+        .cloned()
+    {
+        let rest: Vec<String> = args.skip(1).collect();
+        if rest.iter().any(|a| a == "-h" || a == "--help") {
+            return Ok(Cli::Help);
+        }
+        return remote::parse(&name, &rest).map(Cli::Remote);
     }
     for arg in args {
         if only_inputs {
@@ -37,12 +57,17 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
         match arg.as_str() {
             "-h" | "--help" => return Ok(Cli::Help),
             "-V" | "--version" => return Ok(Cli::Version),
+            "-d" | "--daemon" => daemon = true,
             "--" => only_inputs = true,
             s if s.starts_with('-') && s.len() > 1 => return Err(format!("unknown option: {s}")),
             _ => inputs.push(arg),
         }
     }
-    Ok(Cli::Run { inputs })
+    Ok(if daemon {
+        Cli::Daemon { inputs }
+    } else {
+        Cli::Run { inputs }
+    })
 }
 
 pub fn help_text(program: &str) -> String {
@@ -50,9 +75,21 @@ pub fn help_text(program: &str) -> String {
         "rustune {version} — terminal music player
 
 USAGE:
-    {program} [FILE|DIR|URL|PLAYLIST]...   Play the given items (or open the library)
+    {program} [FILE|DIR|URL|PLAYLIST]...   Play the given items (or open the library);
+                                           queued instead if rustune already runs
+    {program} --daemon [ITEM]...           Run headless, controlled by the commands below
     {program} doctor                       Check audio output, optional tools and paths
     {program} --help | --version
+
+REMOTE CONTROL (talks to the running player or daemon):
+    {program} play | pause | toggle | stop | next | prev | shuffle | quit
+    {program} status [--json]              Now playing, time, volume, modes, queue
+    {program} volume 0-100|+N|-N           Set or change the volume (percent)
+    {program} seek SECS|MM:SS|+N|-N        Jump to a position or skip N seconds
+    {program} repeat [off|all|one]         Set (or cycle) the repeat mode
+    {program} eq PRESET|on|off|toggle      EQ preset (turns the EQ on) or on/off
+    {program} queue ITEM...                Append files, directories or URLs
+    {program} watch                        Print a JSON status line on every change
 
 ARGUMENTS:
     FILE       Audio file (mp3, flac, ogg, wav, m4a, aac, alac, aiff, ...)
@@ -95,6 +132,11 @@ FILES:
     session     {state}
     playlists   {playlists}
     skins       {skins}
+    socket      {socket}
+
+The control socket speaks newline-delimited JSON: {{\"cmd\":\"next\"}},
+{{\"cmd\":\"set_volume\",\"arg\":0.5}}, {{\"get\":\"status\"}}, {{\"subscribe\":true}}.
+Set RUSTUNE_SOCKET to use another socket path.
 
 Playback is built in (no mpv). Optional tools: yt-dlp (online search and
 downloads), ffmpeg (opus/wma and HLS streams). Run '{program} doctor'.
@@ -106,6 +148,7 @@ MORE:
         state = config::state_path().display(),
         playlists = config::playlists_dir().display(),
         skins = config::skins_dir().display(),
+        socket = crate::ipc::endpoint().display(),
     )
 }
 
@@ -252,6 +295,39 @@ mod tests {
     }
 
     #[test]
+    fn parses_daemon_and_remote_commands() {
+        use crate::command::Command;
+        assert_eq!(
+            parse(args(&["--daemon", "a.wav"])),
+            Ok(Cli::Daemon {
+                inputs: args(&["a.wav"])
+            })
+        );
+        assert_eq!(parse(args(&["-d"])), Ok(Cli::Daemon { inputs: vec![] }));
+        assert_eq!(
+            parse(args(&["next"])),
+            Ok(Cli::Remote(Remote::Send(Command::Next)))
+        );
+        assert_eq!(
+            parse(args(&["volume", "-5"])),
+            Ok(Cli::Remote(Remote::Send(Command::VolumeBy(-0.05))))
+        );
+        assert_eq!(
+            parse(args(&["status", "--json"])),
+            Ok(Cli::Remote(Remote::Status { json: true }))
+        );
+        assert_eq!(parse(args(&["seek", "--help"])), Ok(Cli::Help));
+        assert!(parse(args(&["volume"])).is_err());
+        // Subcommand names only count first; later they are inputs.
+        assert_eq!(
+            parse(args(&["a.mp3", "play"])),
+            Ok(Cli::Run {
+                inputs: args(&["a.mp3", "play"])
+            })
+        );
+    }
+
+    #[test]
     fn help_mentions_every_transport_key() {
         let help = help_text("rustune");
         for needle in [
@@ -262,6 +338,10 @@ mod tests {
             "y  lyrics",
             "Backspace/Esc",
             "doctor",
+            "--daemon",
+            "status [--json]",
+            "volume 0-100|+N|-N",
+            "watch",
             ".pls",
         ] {
             assert!(help.contains(needle), "{needle}");
