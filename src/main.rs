@@ -6,6 +6,8 @@ mod event;
 mod extractor;
 mod media;
 mod player;
+#[allow(dead_code)]
+mod providers;
 mod skin;
 mod source;
 #[allow(dead_code)]
