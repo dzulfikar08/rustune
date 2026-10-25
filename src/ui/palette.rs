@@ -216,7 +216,8 @@ impl Palette {
             }
         }
         // Stable: equal scores keep the table order.
-        self.scored.sort_by(|a, b| b.0.cmp(&a.0));
+        self.scored
+            .sort_by_key(|&(score, _)| std::cmp::Reverse(score));
         self.shown.clear();
         self.shown.extend(self.scored.iter().map(|&(_, i)| i));
         self.cursor = 0;
@@ -576,7 +577,10 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(120, 1)).unwrap();
         let mut draw = |app: &App| {
             terminal
-                .draw(|f| render_hints(f.buffer_mut(), f.area(), app))
+                .draw(|f| {
+                    let area = f.area();
+                    render_hints(f.buffer_mut(), area, app);
+                })
                 .unwrap();
             row_text(&terminal, 0)
         };
