@@ -194,8 +194,8 @@ WINAMP_STEPS = [
     ("radio-back", [BACKSPACE], 1, None),
     ("back-to-playlist", [ESC], 1, footer("Playlist")),
     ("local", [BACKTAB, BACKTAB], 1, footer("source Local")),
+    ("search-typing", [b"/", b"s", b"i", b"n", b"e", b" ", b"c"], 1, footer("Search Local: sine c")),
     ("search-results", [ENTER], 2, footer("match")),
-    ("search-results", [ENTER], 2, footer("in the playlist")),
 ]
 
 session("winamp-160x48", "Winamp", 160, 48, WINAMP_STEPS, tracks)
