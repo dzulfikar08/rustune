@@ -135,7 +135,7 @@ pub fn item_from_tags(path: &Path, tags: Tags) -> MediaItem {
             .unwrap_or_else(|| path.to_string_lossy().into_owned())
     };
     let subtitle = match (&tags.artist, &tags.album) {
-        (Some(artist), Some(album)) => Some(format!("{artist} — {album}")),
+        (Some(artist), Some(album)) => Some(format!("{artist} · {album}")),
         (Some(artist), None) => Some(artist.clone()),
         (None, Some(album)) => Some(album.clone()),
         (None, None) => path
@@ -346,7 +346,7 @@ mod tests {
         assert_eq!(tags.artist.as_deref(), Some("Band"));
         assert_eq!(tags.album.as_deref(), Some("Record"));
         let item = item_from_tags(&p, tags);
-        assert_eq!(item.subtitle.as_deref(), Some("Band — Record"));
+        assert_eq!(item.subtitle.as_deref(), Some("Band · Record"));
     }
 
     #[test]

@@ -7,11 +7,13 @@ use std::fmt::Write as _;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::Frame;
 
-use crate::app::{App, Mode, Status};
+use crate::app::{App, InputPurpose, Mode, Status};
+use crate::browse::{Browser, Entry, LevelState};
 use crate::gfx::{GfxPainter, Protocol};
+use crate::keymap::{self, Action, Ctx};
 use crate::skin::{rgba_color, SkinColors, WinampSkin};
 use crate::ui::skin_bitmap::draw_halfblock;
 use crate::ui::skin_layout::{self, Plan, WindowPlan};
@@ -206,9 +208,11 @@ fn render_playlist(
     }
     let visible = ui.pl_rows.len();
     let first = ui.sync_playlist_scroll(visible, view);
+    // While browsing, the provider's rows are drawn over the track area.
+    let shown = if ui.browsing { 0 } else { view.playlist.len() };
     for (i, row) in ui.pl_rows.iter_mut().enumerate() {
         let idx = first + i;
-        row.track = (idx < view.playlist.len()).then_some(idx);
+        row.track = (idx < shown).then_some(idx);
     }
     let text = match first_row {
         Some(r0) => Rect::new(
@@ -228,9 +232,8 @@ fn render_playlist(
     put_window(buf, gfx, ui, plan, pl, graphics);
 
     for i in 0..text.height {
-        if let Some(idx) =
-            (first + usize::from(i) < view.playlist.len()).then_some(first + usize::from(i))
-        {
+        let idx = first + usize::from(i);
+        if idx < shown {
             draw_track_row(buf, text.x, text.y + i, text.width, skin, view, idx);
         }
     }
@@ -592,9 +595,10 @@ fn render_text(
             Style::default().fg(sc.plist_normal).bg(sc.plist_normal_bg),
         );
         let first = ui.sync_playlist_scroll(usize::from(left), view);
+        let shown = if ui.browsing { 0 } else { view.playlist.len() };
         for i in 0..left {
             let idx = first + usize::from(i);
-            if idx >= view.playlist.len() {
+            if idx >= shown {
                 break;
             }
             draw_text_track_row(buf, x0, start + i, area.width, sc, view, idx);
@@ -654,7 +658,8 @@ fn draw_text_track_row(
 // ─── Full screen ────────────────────────────────────────────────────────
 
 /// The Winamp theme's screen: the skin windows above a two-row footer
-/// (prompt and key hints). `skin` is `None` while the skin is still loading.
+/// (status line and key hints). `skin` is `None` while the skin is still
+/// loading. Returns the list rows the playlist editor shows (page keys).
 pub fn draw(
     frame: &mut Frame,
     app: &App,
@@ -662,7 +667,7 @@ pub fn draw(
     view: &PlayerView,
     ui: &mut WinampUiState,
     gfx: &mut GfxPainter,
-) {
+) -> usize {
     let area = frame.area();
     let footer_h = area.height.min(2);
     let body = Rect {
@@ -674,31 +679,22 @@ pub fn draw(
         height: footer_h,
         ..area
     };
-    let sc = skin.map_or(&SkinColors::DEFAULT, |s| &s.colors);
+    let browser = app.winamp_browser();
+    ui.browsing = browser.is_some();
+    let mut rows = 0;
     match skin {
         Some(skin) => {
-            let rects = render_view(frame, body, skin, view, ui, gfx);
-            if view.playlist.is_empty() && !rects.playlist.is_empty() {
-                let msg = match &app.status {
-                    Status::Searching(t)
-                    | Status::Scanning(t)
-                    | Status::Downloading(t)
-                    | Status::Loading(t)
-                    | Status::Error(t) => t.as_str(),
-                    _ => "Queue is empty — press l to open files or s for the library",
-                };
-                let r = rects.playlist;
-                put(
-                    frame.buffer_mut(),
-                    r.x + 1,
-                    r.y,
-                    r.right(),
-                    msg,
-                    Style::default().fg(sc.plist_normal).bg(sc.plist_normal_bg),
-                );
+            let list = render_view(frame, body, skin, view, ui, gfx).playlist;
+            let buf = frame.buffer_mut();
+            rows = usize::from(list.height);
+            match browser {
+                Some(browser) => rows = draw_browser(buf, list, &skin.colors, browser, ui),
+                None if view.playlist.is_empty() => draw_empty(buf, list, &skin.colors, app),
+                None => {}
             }
         }
         None => {
+            let sc = &SkinColors::DEFAULT;
             let style = Style::default().fg(sc.text_fg).bg(sc.text_bg);
             let buf = frame.buffer_mut();
             fill(buf, body, style);
@@ -712,55 +708,584 @@ pub fn draw(
             );
         }
     }
-    render_footer(frame.buffer_mut(), footer, app, sc);
+    render_footer(frame.buffer_mut(), footer, app);
+    rows
 }
 
-fn render_footer(buf: &mut Buffer, area: Rect, app: &App, sc: &SkinColors) {
+/// The provider's current level inside the playlist editor's track area:
+/// a breadcrumb row, then the entries in PLEDIT colours. Returns the
+/// number of entry rows.
+fn draw_browser(
+    buf: &mut Buffer,
+    r: Rect,
+    sc: &SkinColors,
+    browser: &Browser,
+    ui: &mut WinampUiState,
+) -> usize {
+    if r.is_empty() {
+        ui.set_list_region(Rect::default(), 0);
+        return 0;
+    }
+    let normal = Style::default().fg(sc.plist_normal).bg(sc.plist_normal_bg);
+    fill(buf, r, normal);
+    let right = r.right();
+    let title = normal.fg(sc.plist_current).add_modifier(Modifier::BOLD);
+    let mut x = r.x + 1;
+    for (i, crumb) in browser.crumbs().enumerate() {
+        if i > 0 {
+            x = put(buf, x, r.y, right, " › ", title);
+        }
+        x = put(buf, x, r.y, right, crumb, title);
+    }
+    let body = Rect {
+        y: r.y + 1,
+        height: r.height - 1,
+        ..r
+    };
+    let visible = usize::from(body.height);
+    let notice = match browser.state() {
+        LevelState::Loading => Some("Loading…"),
+        LevelState::Error(e) => Some(e.as_str()),
+        LevelState::Ready if browser.is_empty() => Some("Nothing here"),
+        LevelState::Ready => None,
+    };
+    if let Some(notice) = notice {
+        if !body.is_empty() {
+            put(buf, body.x + 1, body.y, right, notice, normal);
+        }
+        ui.set_list_region(Rect::default(), 0);
+        return visible;
+    }
+    let selected = browser.selected();
+    let first = ui.sync_browse_scroll(visible, selected, browser.len());
+    for (i, entry) in browser
+        .entries()
+        .iter()
+        .enumerate()
+        .skip(first)
+        .take(visible)
+    {
+        let y = body.y + (i - first) as u16;
+        let style = if i == selected {
+            normal.bg(sc.plist_selected_bg)
+        } else {
+            normal
+        };
+        fill(buf, Rect::new(r.x, y, r.width, 1), style);
+        let mut cx = r.x + 1;
+        if browser.subscribed(entry) {
+            cx = put(buf, cx, y, right, "★ ", style);
+        }
+        cx = put(buf, cx, y, right, entry.label(), style);
+        if !matches!(entry, Entry::Track { .. }) {
+            cx = put(buf, cx, y, right, " ›", style);
+        }
+        if let Some(detail) = entry.detail() {
+            cx = put(buf, cx, y, right, "  ", style);
+            put(buf, cx, y, right, detail, style.fg(sc.plist_current));
+        }
+    }
+    ui.set_list_region(body, first);
+    visible
+}
+
+/// `key` of `action` in `ctx` (empty when unbound), without allocating.
+fn key_text(ctx: Ctx, action: Action) -> StackStr {
+    let mut s = StackStr::new();
+    if let Some(k) = keymap::first_key(ctx, action) {
+        let _ = write!(s, "{k}");
+    }
+    s
+}
+
+/// What to do with an empty playlist, one key per row, from the key table.
+fn draw_empty(buf: &mut Buffer, r: Rect, sc: &SkinColors, app: &App) {
+    if r.is_empty() {
+        return;
+    }
+    let normal = Style::default().fg(sc.plist_normal).bg(sc.plist_normal_bg);
+    let key = normal.fg(sc.plist_current).add_modifier(Modifier::BOLD);
+    let right = r.right();
+    let x = r.x + 1;
+    let busy = match &app.status {
+        Status::Searching(t)
+        | Status::Scanning(t)
+        | Status::Downloading(t)
+        | Status::Loading(t)
+        | Status::Error(t) => Some(t.as_str()),
+        Status::Idle | Status::Info(_) => None,
+    };
+    if let Some(msg) = busy {
+        put(buf, x, r.y, right, msg, normal);
+        return;
+    }
+    put(buf, x, r.y, right, "The playlist is empty.", key);
+    let ctx = app.active_ctx();
+    let source = app.tab.label();
+    let rows: [(Action, &str, &str); 5] = [
+        (Action::Open, "open files, folders, playlists or URLs", ""),
+        (Action::Search, "search ", source),
+        (Action::NextTab, "change the source (now ", source),
+        (Action::BrowseSource, "browse ", source),
+        (Action::Palette, "all keys", ""),
+    ];
+    let mut y = r.y + 1;
+    for (action, label, arg) in rows {
+        let k = key_text(ctx, action);
+        if k.len == 0 {
+            continue;
+        }
+        if y >= r.bottom() {
+            break;
+        }
+        let mut cx = put(buf, x, y, right, k.as_str(), key);
+        cx = put(buf, cx + 2, y, right, label, normal);
+        cx = put(buf, cx, y, right, arg, normal);
+        if action == Action::NextTab {
+            put(buf, cx, y, right, ")", normal);
+        }
+        y += 1;
+    }
+}
+
+/// Two rows in the terminal's own colours (never the skin's, which can be
+/// unreadable): where you are and what happened, then the keys.
+fn render_footer(buf: &mut Buffer, area: Rect, app: &App) {
     if area.height == 0 {
         return;
     }
-    let right = area.right();
-    let input = Style::default().fg(sc.text_fg).bg(sc.text_bg);
-    fill(buf, Rect::new(area.x, area.y, area.width, 1), input);
-    let prompt = match app.mode {
-        Mode::Browse => " > ",
-        Mode::Input => " / ",
-        _ => " ? ",
-    };
-    let mut cx = put(
-        buf,
-        area.x,
-        area.y,
-        right,
-        prompt,
-        input.add_modifier(Modifier::BOLD),
-    );
-    cx = put(buf, cx, area.y, right, &app.input_text, input);
-    if app.mode == Mode::Input {
-        put(buf, cx, area.y, right, "█", input);
+    fill(buf, area, Style::reset());
+    render_status(buf, Rect { height: 1, ..area }, app);
+    if area.height >= 2 {
+        render_hints(
+            buf,
+            Rect {
+                y: area.y + 1,
+                height: 1,
+                ..area
+            },
+            app,
+        );
     }
-    if area.height < 2 {
+}
+
+/// Status line: the prompt with its cursor while typing; otherwise the
+/// list shown (`Playlist · 9 tracks`, `Radio › Top voted`), the source and
+/// the latest message.
+fn render_status(buf: &mut Buffer, area: Rect, app: &App) {
+    let base = Style::reset();
+    let bold = base.add_modifier(Modifier::BOLD);
+    let (y, right) = (area.y, area.right());
+    let mut x = area.x + 1;
+    if app.mode == Mode::Input {
+        match app.input_purpose {
+            InputPurpose::Search if app.input_text.starts_with(':') => {
+                x = put(buf, x, y, right, "Command", bold);
+            }
+            InputPurpose::Search => {
+                x = put(buf, x, y, right, "Search ", bold);
+                x = put(buf, x, y, right, app.tab.label(), bold);
+            }
+            InputPurpose::ProviderSearch => x = put(buf, x, y, right, app.prompt_label, bold),
+            InputPurpose::SavePlaylist => x = put(buf, x, y, right, "Save the queue as", bold),
+            InputPurpose::Open => x = put(buf, x, y, right, "Open a file, folder or URL", bold),
+        }
+        x = put(buf, x, y, right, ": ", bold);
+        let cursor = base.add_modifier(Modifier::REVERSED);
+        let text = app.input_text.as_str();
+        let mut at_end = true;
+        for (i, (idx, c)) in text.char_indices().enumerate() {
+            let style = if i == app.input_cursor {
+                at_end = false;
+                cursor
+            } else {
+                base
+            };
+            x = put(buf, x, y, right, &text[idx..idx + c.len_utf8()], style);
+        }
+        if at_end {
+            put(buf, x, y, right, " ", cursor);
+        }
         return;
     }
-    let y = area.y + 1;
-    let key = Style::default().fg(sc.led_on).bg(sc.chrome_dark);
-    let label = Style::default().fg(sc.chrome_mid).bg(sc.chrome_dark);
-    fill(buf, Rect::new(area.x, y, area.width, 1), label);
-    super::palette::draw_hints(
+    match app.winamp_browser() {
+        Some(browser) => {
+            for (i, crumb) in browser.crumbs().enumerate() {
+                if i > 0 {
+                    x = put(buf, x, y, right, " › ", bold);
+                }
+                x = put(buf, x, y, right, crumb, bold);
+            }
+        }
+        None => {
+            x = put(buf, x, y, right, "Playlist", bold);
+            let n = app.queue.len();
+            let mut count = StackStr::new();
+            let _ = write!(count, " · {n} track{}", if n == 1 { "" } else { "s" });
+            x = put(buf, x, y, right, count.as_str(), base);
+            x = put(buf, x, y, right, "  ·  source ", base);
+            x = put(buf, x, y, right, app.tab.label(), bold);
+        }
+    }
+    let message = match &app.status {
+        Status::Idle => None,
+        Status::Error(t) => Some((t, bold.fg(Color::Red))),
+        Status::Info(t)
+        | Status::Searching(t)
+        | Status::Loading(t)
+        | Status::Scanning(t)
+        | Status::Downloading(t) => Some((t, base)),
+    };
+    if let Some((text, style)) = message {
+        x = put(buf, x, y, right, "  ·  ", base);
+        put(buf, x, y, right, text, style);
+    }
+}
+
+/// One hint: the keys of one or two actions (`j/k`) and a label.
+type Hint = (Action, Option<Action>, &'static str);
+
+/// The queue in the playlist editor, most important first.
+const QUEUE_HINTS: &[Hint] = &[
+    (Action::Down, Some(Action::Up), "move"),
+    (Action::Activate, None, "play"),
+    (Action::Search, None, "search"),
+    (Action::NextTab, None, "source"),
+    (Action::BrowseSource, None, "browse"),
+    (Action::TogglePause, None, "pause"),
+    (Action::Remove, None, "remove"),
+    (Action::MoveDown, Some(Action::MoveUp), "reorder"),
+    (Action::Open, None, "open"),
+    (Action::EqPanel, None, "EQ"),
+    (Action::PlaylistWindow, None, "playlist"),
+    (Action::Quit, None, "quit"),
+];
+
+const EMPTY_HINTS: &[Hint] = &[
+    (Action::Open, None, "open"),
+    (Action::Search, None, "search"),
+    (Action::NextTab, None, "source"),
+    (Action::BrowseSource, None, "browse"),
+    (Action::Quit, None, "quit"),
+];
+
+/// A provider's menus in the playlist editor. `Enter` reads "play" on tracks.
+const BROWSER_HINTS: &[Hint] = &[
+    (Action::Down, Some(Action::Up), "move"),
+    (Action::Activate, None, "open"),
+    (Action::Back, None, "back"),
+    (Action::ProviderSearch, None, "search"),
+    (Action::NextTab, None, "source"),
+    (Action::Enqueue, None, "queue"),
+    (Action::Subscribe, None, "subscribe"),
+    (Action::Reload, None, "reload"),
+    (Action::TogglePause, None, "pause"),
+    (Action::Quit, None, "quit"),
+];
+
+const PROMPT_HINTS: &[Hint] = &[
+    (Action::Submit, None, "ok"),
+    (Action::Cancel, None, "cancel"),
+    (Action::HistoryPrev, None, "history"),
+    (Action::ClearLine, None, "clear"),
+];
+
+/// A row of key chips (bold reverse video in the terminal's colours, so
+/// they read on any skin and terminal theme), each followed by its label.
+struct Chips<'a> {
+    buf: &'a mut Buffer,
+    y: u16,
+    start: u16,
+    x: u16,
+    right: u16,
+}
+
+impl Chips<'_> {
+    fn width(key: &str, label: &str) -> u16 {
+        (key.chars().count() + label.chars().count() + 3) as u16
+    }
+
+    fn draw(&mut self, x: u16, key: &str, label: &str) -> u16 {
+        let base = Style::reset();
+        let chip = base.add_modifier(Modifier::BOLD | Modifier::REVERSED);
+        let right = self.buf.area.right();
+        let mut x = put(self.buf, x, self.y, right, " ", chip);
+        x = put(self.buf, x, self.y, right, key, chip);
+        x = put(self.buf, x, self.y, right, " ", chip);
+        put(self.buf, x + 1, self.y, right, label, base)
+    }
+
+    /// Adds a hint when it fits; `false` once the row is full.
+    fn push(&mut self, key: &str, label: &str) -> bool {
+        let gap = if self.x > self.start { 2 } else { 0 };
+        if self.x + gap + Self::width(key, label) > self.right {
+            return false;
+        }
+        self.x = self.draw(self.x + gap, key, label);
+        true
+    }
+
+    /// Draws a hint flush right and keeps the others clear of it.
+    fn reserve_right(&mut self, key: &str, label: &str) {
+        let w = Self::width(key, label);
+        if self.start + w > self.right {
+            return;
+        }
+        let x = self.right - w;
+        self.draw(x, key, label);
+        self.right = x.saturating_sub(2);
+    }
+}
+
+/// Key hints for what the Winamp view does right now; the rightmost slot
+/// always offers the palette (`? all keys`) where it can open.
+pub(super) fn render_hints(buf: &mut Buffer, area: Rect, app: &App) {
+    if area.is_empty() {
+        return;
+    }
+    fill(buf, area, Style::reset());
+    let mut chips = Chips {
+        y: area.y,
+        start: area.x + 1,
+        x: area.x + 1,
+        right: area.right().saturating_sub(1),
         buf,
-        Rect::new(area.x + 1, y, area.width.saturating_sub(1), 1),
-        app.hint_ctx(),
-        key,
-        label,
-    );
+    };
+    if app.palette.is_some() {
+        for (keys, hint) in keymap::hints(Ctx::PALETTE) {
+            if !chips.push(keys, hint) {
+                break;
+            }
+        }
+        return;
+    }
+    let (ctx, hints) = if app.mode == Mode::Input {
+        (Ctx::PROMPT, PROMPT_HINTS)
+    } else {
+        let ctx = app.active_ctx();
+        let palette = key_text(ctx, Action::Palette);
+        if palette.len > 0 {
+            chips.reserve_right(palette.as_str(), "all keys");
+        }
+        let hints = if app.winamp_browser().is_some() {
+            BROWSER_HINTS
+        } else if app.queue.is_empty() {
+            EMPTY_HINTS
+        } else {
+            QUEUE_HINTS
+        };
+        (ctx, hints)
+    };
+    let on_track = app
+        .winamp_browser()
+        .is_some_and(|b| matches!(b.entries().get(b.selected()), Some(Entry::Track { .. })));
+    let search = app.input_purpose == InputPurpose::Search;
+    for &(action, also, label) in hints {
+        let mut keys = key_text(ctx, action);
+        if keys.len == 0 {
+            continue;
+        }
+        if let Some(k) = also.and_then(|a| keymap::first_key(ctx, a)) {
+            let _ = write!(keys, "/{k}");
+        }
+        let label = match action {
+            Action::Activate if on_track => "play",
+            Action::Submit if search => "search",
+            _ => label,
+        };
+        if !chips.push(keys.as_str(), label) {
+            break;
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+    use crate::providers::ProviderKind;
     use crate::skin::tests::{build_wsz, solid_bmp};
-    use crate::winamp::tests::sample_view;
-    use ratatui::style::Color;
+    use crate::theme::Theme;
+    use crate::winamp::tests::{sample_playlist, sample_view};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn winamp_app(tracks: usize) -> App {
+        let mut app = App::new(Config::default());
+        app.mode = Mode::Browse;
+        app.theme = Theme::from_name("Winamp");
+        app.queue
+            .replace(sample_playlist()[..tracks].to_vec(), None);
+        app
+    }
+
+    /// Draws the whole Winamp screen (text layout: the terminal is narrower
+    /// than the skin) and returns the buffer and the list rows.
+    fn draw_app(app: &App, w: u16, h: u16, ui: &mut WinampUiState) -> (Buffer, usize) {
+        let skin = skin_with_bitmaps();
+        let mut gfx = GfxPainter::with_cell_size(Protocol::HalfBlock, None);
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        let mut rows = 0;
+        terminal
+            .draw(|f| {
+                let view = app.player_view();
+                rows = draw(f, app, Some(&skin), &view, ui, &mut gfx);
+            })
+            .unwrap();
+        (terminal.backend().buffer().clone(), rows)
+    }
+
+    fn row_text(buf: &Buffer, y: u16) -> String {
+        (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+    }
+
+    fn all_rows(buf: &Buffer) -> Vec<String> {
+        (0..buf.area.height).map(|y| row_text(buf, y)).collect()
+    }
+
+    fn chip(buf: &Buffer, y: u16, key: &str) -> Position {
+        let row = row_text(buf, y);
+        let col = row
+            .find(&format!(" {key} "))
+            .unwrap_or_else(|| panic!("no {key} chip in {row:?}"));
+        Position::new(row[..col].chars().count() as u16 + 1, y)
+    }
+
+    #[test]
+    fn footer_uses_terminal_colours_and_key_chips() {
+        let app = winamp_app(9);
+        let mut ui = WinampUiState::new();
+        let (buf, rows) = draw_app(&app, 120, 30, &mut ui);
+        assert!(rows > 0);
+        let status = row_text(&buf, 28);
+        assert!(
+            status.starts_with(" Playlist · 9 tracks  ·  source Local"),
+            "{status:?}"
+        );
+        let hints = row_text(&buf, 29);
+        assert!(
+            hints.starts_with("  j/k  move   Enter  play   /  search"),
+            "{hints:?}"
+        );
+        assert!(hints.trim_end().ends_with(" ?  all keys"), "{hints:?}");
+        assert!(!hints.contains("browse"), "Local has no menus: {hints:?}");
+        // Keys: bold reverse video in the terminal's default colours.
+        let chip_style = Modifier::BOLD | Modifier::REVERSED;
+        for key in ["j/k", "Enter", "/", "?"] {
+            let cell = &buf[chip(&buf, 29, key)];
+            assert!(cell.modifier.contains(chip_style), "{key}: {cell:?}");
+            assert_eq!((cell.fg, cell.bg), (Color::Reset, Color::Reset), "{key}");
+        }
+        // Labels and the status line: plain terminal colours.
+        let label = &buf[(hints.find("move").unwrap() as u16, 29)];
+        assert!(!label.modifier.contains(Modifier::REVERSED));
+        assert_eq!((label.fg, label.bg), (Color::Reset, Color::Reset));
+        let place = &buf[(1, 28)];
+        assert_eq!((place.fg, place.bg), (Color::Reset, Color::Reset));
+        assert!(place.modifier.contains(Modifier::BOLD));
+
+        // Narrow terminals keep the most important hints and `? all keys`.
+        let (buf, _) = draw_app(&app, 40, 20, &mut ui);
+        let hints = row_text(&buf, 19);
+        assert!(hints.starts_with("  j/k  move"), "{hints:?}");
+        assert!(hints.trim_end().ends_with(" ?  all keys"), "{hints:?}");
+    }
+
+    #[test]
+    fn status_line_follows_the_state() {
+        let mut app = winamp_app(1);
+        let mut ui = WinampUiState::new();
+        let (buf, _) = draw_app(&app, 100, 30, &mut ui);
+        assert!(row_text(&buf, 28).starts_with(" Playlist · 1 track  ·"));
+
+        app.error("No audio output");
+        let (buf, _) = draw_app(&app, 100, 30, &mut ui);
+        let status = row_text(&buf, 28);
+        let at = status.find("No audio output").expect("error shown");
+        let at = status[..at].chars().count() as u16;
+        assert_eq!(buf[(at, 28)].fg, Color::Red);
+
+        // Typing: the prompt names what is searched and shows a cursor.
+        app.open_prompt(InputPurpose::Search);
+        app.insert_text("abc");
+        let (buf, _) = draw_app(&app, 100, 30, &mut ui);
+        let status = row_text(&buf, 28);
+        assert!(status.starts_with(" Search Local: abc "), "{status:?}");
+        let cursor = &buf[(" Search Local: abc".len() as u16, 28)];
+        assert!(cursor.modifier.contains(Modifier::REVERSED));
+        let hints = row_text(&buf, 29);
+        assert!(
+            hints.contains(" Enter  search") && hints.contains(" Esc  cancel"),
+            "{hints:?}"
+        );
+        assert!(!hints.contains("all keys"), "`?` types in the prompt");
+    }
+
+    #[test]
+    fn provider_menus_draw_inside_the_playlist_editor() {
+        let mut app = winamp_app(3);
+        app.tab = crate::app::Tab::Provider(ProviderKind::Radio);
+        let mut ui = WinampUiState::new();
+        let (buf, _) = draw_app(&app, 100, 30, &mut ui);
+        assert!(row_text(&buf, 29).contains(" B  browse"), "menus on offer");
+
+        app.winamp_browse = true;
+        let (buf, rows) = draw_app(&app, 100, 30, &mut ui);
+        let lines = all_rows(&buf);
+        assert!(
+            lines[28].starts_with(" Radio ") && !lines[28].contains("Playlist"),
+            "{:?}",
+            lines[28]
+        );
+        let y = lines
+            .iter()
+            .position(|l| l.starts_with(" Top clicked ›"))
+            .unwrap_or_else(|| panic!("{lines:#?}")) as u16;
+        assert!(
+            lines[usize::from(y) - 2].starts_with(" Radio "),
+            "breadcrumb row"
+        );
+        assert!(lines[usize::from(y) - 1].starts_with(" Top voted ›"));
+        assert_eq!(rows, usize::from(29 - y), "entry rows reported");
+        let hints = row_text(&buf, 29);
+        assert!(hints.contains(" Enter  open") && hints.contains(" Backspace  back"));
+        // The first row is highlighted; clicks map through the browser rows.
+        let skin = skin_with_bitmaps();
+        assert_eq!(buf[(0, y - 1)].bg, skin.colors.plist_selected_bg);
+        let click = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: 3,
+            row: y,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+        assert_eq!(ui.list_press(&click, 6), Some((1, false)));
+    }
+
+    #[test]
+    fn empty_playlist_names_keys_from_the_key_table() {
+        let app = winamp_app(0);
+        let mut ui = WinampUiState::new();
+        let (buf, _) = draw_app(&app, 100, 30, &mut ui);
+        let lines = all_rows(&buf);
+        let ctx = app.active_ctx();
+        let key = |a| keymap::first_key(ctx, a).unwrap().to_string();
+        for expected in [
+            "The playlist is empty.".to_string(),
+            format!("{}  open files", key(Action::Open)),
+            format!("{}  search Local", key(Action::Search)),
+            format!("{}  change the source (now Local)", key(Action::NextTab)),
+            format!("{}  all keys", key(Action::Palette)),
+        ] {
+            assert!(
+                lines.iter().any(|l| l.contains(&expected)),
+                "{expected:?} in {lines:#?}"
+            );
+        }
+        assert!(!lines.iter().any(|l| l.contains("for the library")));
+        assert!(!lines.iter().any(|l| l.contains('—')));
+        let hints = row_text(&buf, 29);
+        assert!(hints.starts_with("  l  open   /  search"), "{hints:?}");
+    }
 
     fn skin_with_bitmaps() -> WinampSkin {
         let wsz = build_wsz(&[

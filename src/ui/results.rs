@@ -168,7 +168,7 @@ pub fn render_queue(frame: &mut Frame, area: Rect, app: &mut App) {
     if queue.is_empty() {
         frame.render_widget(
             ratatui::widgets::Paragraph::new(
-                "Queue is empty — Enter plays the result list, a appends, A plays next, P goes back.",
+                "Queue is empty. Enter plays the result list, a appends, A plays next, P goes back.",
             )
             .style(theme.empty_text)
             .block(block.padding(Padding::horizontal(1))),

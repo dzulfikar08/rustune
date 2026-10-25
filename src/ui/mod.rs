@@ -53,8 +53,14 @@ pub fn draw(
         Mode::SkinBrowser => return skin_browser::render(frame, area, app, preview_ui, gfx),
         // The palette replaces the skin: its images would cover the overlay.
         Mode::Browse | Mode::Input if app.is_winamp() && app.palette.is_none() => {
-            let view = app.player_view();
-            winamp::draw(frame, app, app.winamp_skin.as_ref(), &view, winamp_ui, gfx);
+            let rows = {
+                let view = app.player_view();
+                winamp::draw(frame, app, app.winamp_skin.as_ref(), &view, winamp_ui, gfx)
+            };
+            app.winamp_rows = rows;
+            if let Some(browser) = app.browser_mut() {
+                browser.set_viewport(rows);
+            }
             return true;
         }
         Mode::Browse | Mode::Input if app.is_winamp() => {
@@ -64,7 +70,7 @@ pub fn draw(
                 area.width,
                 area.height.min(1),
             );
-            palette::render_hints(frame.buffer_mut(), bottom, app);
+            winamp::render_hints(frame.buffer_mut(), bottom, app);
         }
         Mode::Browse | Mode::Input => draw_standard(frame, app),
     }

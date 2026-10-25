@@ -158,6 +158,8 @@ pub enum BrowseAction {
     ClearQueue,
     /// Next (`true`) or previous source tab.
     SwitchTab(bool),
+    /// Winamp: show the provider's menus in the playlist editor.
+    OpenBrowser,
     /// Something happened in a provider tab's browser.
     Browse(BrowseOutcome),
     Download(String, String), // id, title
@@ -233,6 +235,11 @@ pub struct App {
     /// Focused EQ panel slider (0 = preamp, 1..=10 = bands).
     pub eq_focus: usize,
     pub show_playlist: bool,
+    /// Winamp: the playlist editor shows the provider tab's menus instead
+    /// of the queue (only meaningful on a provider tab).
+    pub winamp_browse: bool,
+    /// List rows the Winamp playlist editor showed last frame (page keys).
+    pub winamp_rows: usize,
     pub show_lyrics: bool,
     pub lyrics: LyricsStatus,
     pub vis_mode: VisMode,
@@ -319,6 +326,8 @@ impl App {
             show_eq: false,
             eq_focus: 0,
             show_playlist: false,
+            winamp_browse: false,
+            winamp_rows: 1,
             show_lyrics: false,
             lyrics: LyricsStatus::Idle,
             vis_mode: VisMode::default(),
@@ -376,6 +385,30 @@ impl App {
 
     pub fn browser_for(&mut self, kind: ProviderKind) -> Option<&mut Browser> {
         self.browsers.iter_mut().find(|b| b.kind == kind)
+    }
+
+    /// The browser of the active provider tab.
+    pub fn browser(&self) -> Option<&Browser> {
+        let Tab::Provider(kind) = self.tab else {
+            return None;
+        };
+        self.browsers.iter().find(|b| b.kind == kind)
+    }
+
+    /// Winamp: the browser shown in the playlist editor, if it is browsing.
+    pub fn winamp_browser(&self) -> Option<&Browser> {
+        self.browser()
+            .filter(|_| self.winamp_browse && self.is_winamp())
+    }
+
+    /// Whether the focused list is the queue: the playlist window, or the
+    /// Winamp playlist editor while it is not browsing a provider.
+    fn queue_is_list(&self) -> bool {
+        if self.is_winamp() {
+            self.winamp_browser().is_none()
+        } else {
+            self.show_playlist
+        }
     }
 
     // ── status ───────────────────────────────────────────────────────────
@@ -536,18 +569,31 @@ impl App {
 
     /// Key contexts live in the browse view (see `keymap::Ctx`).
     pub fn active_ctx(&self) -> Ctx {
+        let provider = match self.tab {
+            Tab::Provider(ProviderKind::Podcast) => Some(Ctx::PROVIDER.or(Ctx::PODCAST)),
+            Tab::Provider(_) => Some(Ctx::PROVIDER),
+            Tab::Local | Tab::Online => None,
+        };
+        if self.is_winamp() {
+            // The skin's playlist editor is the only list on screen: the
+            // queue, or the provider's menus while browsing them.
+            return Ctx::GLOBAL.or(match provider {
+                Some(ctx) if self.winamp_browse => ctx,
+                Some(_) => Ctx::PLAYLIST.or(Ctx::BROWSABLE),
+                None => Ctx::PLAYLIST,
+            });
+        }
         let mut ctx = Ctx::GLOBAL;
-        if self.show_eq && !self.is_winamp() {
+        if self.show_eq {
             ctx = ctx.or(Ctx::EQ);
         }
         ctx.or(if self.show_playlist {
             Ctx::PLAYLIST
         } else {
-            match self.tab {
-                Tab::Local => Ctx::LIBRARY,
-                Tab::Online => Ctx::LIBRARY.or(Ctx::ONLINE),
-                Tab::Provider(ProviderKind::Podcast) => Ctx::PROVIDER.or(Ctx::PODCAST),
-                Tab::Provider(_) => Ctx::PROVIDER,
+            match (self.tab, provider) {
+                (_, Some(ctx)) => ctx,
+                (Tab::Online, None) => Ctx::LIBRARY.or(Ctx::ONLINE),
+                _ => Ctx::LIBRARY,
             }
         })
     }
@@ -603,6 +649,10 @@ impl App {
             | Action::EqLowerMore
             | Action::EqReset => crate::ui::eq_action(action, &mut self.eq_focus, &self.eq)
                 .map_or(BrowseAction::None, BrowseAction::Cmd),
+            // Searching a provider tab searches the provider, from any list.
+            Action::Search if matches!(self.tab, Tab::Provider(_)) => {
+                self.browser_action(Action::ProviderSearch)
+            }
             Action::Search => self.prompt_with(InputPurpose::Search, ""),
             Action::CommandPrompt => self.prompt_with(InputPurpose::Search, ":"),
             Action::JumpToTime => self.prompt_with(InputPurpose::Search, ":seek "),
@@ -615,16 +665,29 @@ impl App {
                 self.open_palette();
                 BrowseAction::None
             }
-            _ if self.show_playlist => self.playlist_action(action),
-            _ if matches!(self.tab, Tab::Provider(_)) => {
-                let subs = self.config.providers.podcast.subscriptions.clone();
-                match self.browser_mut() {
-                    Some(browser) => BrowseAction::Browse(browser.handle(action, &subs)),
-                    None => BrowseAction::None,
-                }
-            }
+            Action::BrowseSource => match self.browser() {
+                Some(_) => BrowseAction::OpenBrowser,
+                None => BrowseAction::None,
+            },
+            _ if self.queue_is_list() => self.playlist_action(action),
+            _ if matches!(self.tab, Tab::Provider(_)) => self.browser_action(action),
             _ => self.results_action(action),
         }
+    }
+
+    /// A list action for the active provider tab's browser. In Winamp, going
+    /// back from its root menu returns the playlist editor to the queue.
+    fn browser_action(&mut self, action: Action) -> BrowseAction {
+        let winamp = self.is_winamp();
+        let subs = self.config.providers.podcast.subscriptions.clone();
+        let Some(browser) = self.browser_mut() else {
+            return BrowseAction::None;
+        };
+        if winamp && action == Action::Back && browser.at_root() {
+            self.winamp_browse = false;
+            return BrowseAction::None;
+        }
+        BrowseAction::Browse(browser.handle(action, &subs))
     }
 
     fn prompt_with(&mut self, purpose: InputPurpose, text: &str) -> BrowseAction {
@@ -635,6 +698,9 @@ impl App {
 
     /// Rows a page key moves in the main list.
     fn page_rows(&self) -> usize {
+        if self.is_winamp() {
+            return self.winamp_rows.max(1);
+        }
         usize::from(self.layout_rects.results.height.saturating_sub(2).max(1))
     }
 
@@ -1160,6 +1226,117 @@ mod tests {
         assert!(matches!(
             a.handle_browse_key(key(KeyCode::Delete)),
             BrowseAction::RemoveFromQueue(2)
+        ));
+    }
+
+    fn winamp_app() -> App {
+        let mut a = app();
+        a.theme = Theme::from_name("Winamp");
+        a.queue.replace((0..5).map(item).collect(), None);
+        a
+    }
+
+    #[test]
+    fn winamp_list_keys_drive_the_playlist_editor() {
+        let mut a = winamp_app();
+        // The library list is not on screen: the keys move the queue cursor.
+        assert_eq!(
+            cmd(a.handle_browse_key(key(KeyCode::Char('j')))),
+            Some(Command::Select(1))
+        );
+        a.queue.set_cursor(3);
+        assert_eq!(
+            cmd(a.handle_browse_key(key(KeyCode::Up))),
+            Some(Command::Select(2))
+        );
+        assert_eq!(
+            cmd(a.handle_browse_key(key(KeyCode::Enter))),
+            Some(Command::PlayIndex(3))
+        );
+        assert_eq!(
+            cmd(a.handle_browse_key(key(KeyCode::Char('G')))),
+            Some(Command::Select(4))
+        );
+        a.winamp_rows = 2;
+        assert_eq!(
+            cmd(a.handle_browse_key(key(KeyCode::PageUp))),
+            Some(Command::Select(1))
+        );
+        assert!(matches!(
+            a.handle_browse_key(shift(KeyCode::Char('J'))),
+            BrowseAction::MoveInQueue { from: 3, to: 4 }
+        ));
+        assert!(matches!(
+            a.handle_browse_key(key(KeyCode::Char('D'))),
+            BrowseAction::RemoveFromQueue(3)
+        ));
+        assert_eq!(a.list_state.selected(), Some(0), "library untouched");
+        // Library-only keys are not live; `/` still searches the source.
+        assert!(matches!(
+            a.handle_browse_key(key(KeyCode::Char('a'))),
+            BrowseAction::None
+        ));
+        assert!(
+            !a.active_ctx().intersects(Ctx::BROWSABLE),
+            "Local has no menus"
+        );
+        a.handle_browse_key(key(KeyCode::Char('/')));
+        assert_eq!(
+            (a.mode.clone(), a.input_purpose),
+            (Mode::Input, InputPurpose::Search)
+        );
+    }
+
+    #[test]
+    fn winamp_provider_menus_descend_and_return_to_the_playlist() {
+        let mut a = winamp_app();
+        a.tab = Tab::Provider(ProviderKind::Radio);
+        assert!(a.active_ctx().intersects(Ctx::BROWSABLE));
+        assert!(matches!(
+            a.handle_browse_key(shift(KeyCode::Char('B'))),
+            BrowseAction::OpenBrowser
+        ));
+        assert!(a.winamp_browser().is_none(), "the controller opens it");
+        a.winamp_browse = true;
+        assert!(a.winamp_browser().is_some());
+        // j moves the menu, not the queue.
+        assert!(matches!(
+            a.handle_browse_key(key(KeyCode::Char('j'))),
+            BrowseAction::Browse(BrowseOutcome::None)
+        ));
+        assert_eq!(a.browser().map(Browser::selected), Some(1));
+        assert_eq!(a.queue.cursor(), 0);
+        // Enter opens "Top clicked" (fetched by the controller).
+        assert!(matches!(
+            a.handle_browse_key(key(KeyCode::Enter)),
+            BrowseAction::Browse(BrowseOutcome::Fetch { .. })
+        ));
+        assert_eq!(
+            a.browser().map(Browser::title).as_deref(),
+            Some("Radio › Top clicked")
+        );
+        // `/` searches the provider, not yt-dlp.
+        assert!(matches!(
+            a.handle_browse_key(key(KeyCode::Char('/'))),
+            BrowseAction::Browse(BrowseOutcome::Prompt(_))
+        ));
+        // Backspace goes up a level; at the root, Esc returns to the queue.
+        a.handle_browse_key(key(KeyCode::Backspace));
+        assert!(a.browser().is_some_and(Browser::at_root));
+        assert!(a.winamp_browse);
+        assert!(matches!(
+            a.handle_browse_key(key(KeyCode::Esc)),
+            BrowseAction::None
+        ));
+        assert!(!a.winamp_browse);
+        assert_eq!(
+            cmd(a.handle_browse_key(key(KeyCode::Char('j')))),
+            Some(Command::Select(1))
+        );
+        // On a provider tab `/` searches the provider from the queue too.
+        assert!(matches!(
+            a.handle_browse_key(key(KeyCode::Char('/'))),
+            BrowseAction::Browse(BrowseOutcome::Prompt(_))
         ));
     }
 
