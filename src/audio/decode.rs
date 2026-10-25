@@ -96,6 +96,7 @@ impl Converter {
         let out_ch = self.out.channels;
         match self.resampler.as_mut() {
             None => remix(data, in_ch, out_ch, dst),
+            Some(r) if in_ch == out_ch => r.process(data, dst),
             // Resample at the smaller channel count.
             Some(r) if in_ch < out_ch => {
                 self.mixed.clear();
@@ -113,14 +114,14 @@ impl Converter {
     fn finish(&mut self, dst: &mut Vec<f32>) {
         let in_ch = self.input.1.max(1);
         let out_ch = self.out.channels;
-        if let Some(r) = self.resampler.as_mut() {
-            self.mixed.clear();
-            r.finish(&mut self.mixed);
-            if in_ch < out_ch {
+        match self.resampler.as_mut() {
+            Some(r) if in_ch < out_ch => {
+                self.mixed.clear();
+                r.finish(&mut self.mixed);
                 remix(&self.mixed, in_ch, out_ch, dst);
-            } else {
-                dst.extend_from_slice(&self.mixed);
             }
+            Some(r) => r.finish(dst),
+            None => {}
         }
     }
 
