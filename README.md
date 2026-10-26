@@ -31,7 +31,7 @@ A lightweight terminal music player: a single small binary with no mpv or other 
 <table>
   <tr>
     <td><img src="assets/screenshots/skin-zelda.webp" width="400" alt="rustune with a Zelda skin: main, equalizer and playlist windows"></td>
-    <td><img src="assets/screenshots/skin-breeder.webp" width="400" alt="rustune with the Breeder skin: main, equalizer and playlist windows"></td>
+    <td><img src="assets/screenshots/skin-breeder.webp" width="400" alt="rustune with the Breeder skin: main and playlist windows"></td>
   </tr>
   <tr>
     <td align="center">Zelda</td>
@@ -40,6 +40,32 @@ A lightweight terminal music player: a single small binary with no mpv or other 
 </table>
 
 Both skins come from the [Winamp Skin Museum](https://skins.webamp.org/) and are drawn from their own bitmaps, right in the terminal.
+
+## Lightweight
+
+rustune is inspired by [cliamp](https://github.com/bjarneo/cliamp), a great Winamp-style terminal player, and aims to do the same job with far fewer resources. Measured on an Apple M1 MacBook Air (8 GB), rustune 0.3.6 vs cliamp 2.3.0, both at their defaults with the visualizer on, playing the same 192 kbps MP3, 30 s windows, whole process tree, repeated runs:
+
+| | rustune | cliamp |
+|---|---|---|
+| macOS arm64 binary | 5.2 MB | 34.9 MB |
+| Linux x86_64 binary | 6.5 MB | 38.0 MB |
+| RAM while playing | 29 MB | 63 MB |
+| CPU while playing (TUI) | 3.5 % | 15 % |
+| CPU while playing (`--daemon`) | 0.9 % | 6.1 % |
+| CPU while paused | 0.14 % | 0.58 % |
+| Playing a YouTube song | one process, 31 MB | player + yt-dlp (82 MB) + ffmpeg (15 MB) for the whole song |
+
+cliamp supports more streaming services (Spotify, Tidal, Qobuz) and Lua plugins; rustune has full `.wsz` skins and ReplayGain.
+
+### How rustune uses yt-dlp
+
+yt-dlp is great at finding audio, but it is a Python program. rustune only asks it one question: where is the audio file?
+
+- **Spawn, ask, exit.** yt-dlp runs once per song (about 1.7 s) to get the stream link, with a timeout. If you skip or stop before it answers, rustune kills it.
+- **Pick a format rustune can play.** rustune asks for AAC (YouTube format 140), which its own decoder handles, so no ffmpeg runs behind the song.
+- **Instant seeking.** The audio streams over plain HTTP, so jumping ahead is a range request instead of restarting a pipeline.
+
+Sources that only offer HLS or Opus (some SoundCloud tracks) still go through ffmpeg.
 
 ## Installation
 
@@ -62,7 +88,7 @@ The Linux builds need glibc and the ALSA library at runtime (`libasound2`, calle
 
 ### Install script
 
-`install.sh` picks the release binary for your OS and CPU, checks it against the release's SHA256 checksums and installs it to `~/.local/bin`. It honours `RUSTUNE_INSTALL_DIR` (install folder) and `RUSTUNE_VERSION` (a release tag such as `v0.3.6`), and warns when the folder is not on your `PATH`:
+`install.sh` picks the release binary for your OS and CPU, checks it against the release's SHA256 checksums and installs it to `~/.local/bin`. It honours `RUSTUNE_INSTALL_DIR` (install folder) and `RUSTUNE_VERSION` (a release tag such as `v0.3.7`), and warns when the folder is not on your `PATH`:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
@@ -486,4 +512,4 @@ This project is licensed under the [MIT License](LICENSE).
 
 If you find rustune useful, consider supporting development:
 
-[Donate via Saweria](https://saweria.co/dzulfikar08)
+[Donate via Saweria](https://saweria.co/dzulfikar08) | [Polar](https://buy.polar.sh/polar_cl_5biCTVOUrPNRQrHDDDQATVrUfCsMHD72P5pMy2cvmUX)
