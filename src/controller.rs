@@ -93,6 +93,8 @@ pub struct Controller {
     awaiting_switch: bool,
     /// Tracks that failed in a row; skipping stops after a full queue.
     failures: usize,
+    /// Last stream recovery: (queue index, position it resumed at).
+    recovered: Option<(usize, Duration)>,
     /// Now-playing title from the stream (ICY), when it differs from the item.
     stream_title: Option<String>,
     tracker: Option<Tracker>,
@@ -366,6 +368,7 @@ impl Controller {
             preload: None,
             awaiting_switch: false,
             failures: 0,
+            recovered: None,
             stream_title: None,
             tracker: None,
             lyrics_cache: HashMap::new(),
@@ -1001,7 +1004,9 @@ impl Controller {
             }
             EngineEvent::Error { token, message } => {
                 if token == self.play_token {
-                    self.on_track_error(message);
+                    if !self.recover_stream() {
+                        self.on_track_error(message);
+                    }
                 } else if self.preload.take_if(|p| p.token == token).is_some()
                     && self.awaiting_switch
                 {
@@ -1022,6 +1027,37 @@ impl Controller {
                 self.request_lyrics();
             }
         }
+        true
+    }
+
+    /// A yt-dlp stream failed (its link expired, or the server refused it):
+    /// fetch a fresh link and resume where it stopped, instead of skipping.
+    /// Once per track, again only after another 30 s of playback, so a
+    /// stream that keeps failing still moves on.
+    fn recover_stream(&mut self) -> bool {
+        let (Some(idx), Some(pb)) = (self.app.queue.current_index(), &self.app.playback) else {
+            return false;
+        };
+        if !matches!(
+            self.app.queue.current().map(|i| &i.source),
+            Some(SourceKind::Extractor(_))
+        ) {
+            return false;
+        }
+        let at = pb.elapsed;
+        if matches!(self.recovered, Some((i, last)) if i == idx && at < last + Duration::from_secs(30))
+        {
+            return false;
+        }
+        self.play_current();
+        self.recovered = Some((idx, at));
+        if !at.is_zero() {
+            self.resume = Some((idx, at.as_secs()));
+            if let Some(pb) = &mut self.app.playback {
+                pb.elapsed = at;
+            }
+        }
+        self.app.info("Stream dropped: reconnecting");
         true
     }
 
@@ -2887,6 +2923,55 @@ mod tests {
         ctl.drain(err(ctl.play_token), &mut rx);
         assert!(ctl.app.playback.is_none(), "every entry failed: stop");
         assert!(matches!(&ctl.app.status, Status::Error(m) if m == "boom"));
+    }
+
+    #[tokio::test]
+    async fn dropped_ytdlp_stream_reconnects_where_it_stopped() {
+        let (mut ctl, rec, _rx) = with_engine();
+        let yt = |n: usize| MediaItem {
+            source: SourceKind::Extractor("ytdlp".into()),
+            ..url_item(n)
+        };
+        ctl.app.queue.replace(vec![yt(0), yt(1)], None);
+        ctl.apply(Command::PlayIndex(0));
+        let resolved = |ctl: &mut Controller| {
+            let token = ctl.play_token;
+            ctl.handle_event(AppEvent::StreamReady {
+                token,
+                result: Ok(crate::media::StreamInfo {
+                    url: "https://cdn.example/a.m4a".into(),
+                    title: "t0".into(),
+                    page_title: None,
+                }),
+            });
+            ctl.handle_event(started(token));
+        };
+        let err = |ctl: &mut Controller| {
+            let token = ctl.play_token;
+            ctl.handle_event(AppEvent::Engine(EngineEvent::Error {
+                token,
+                message: "HTTP 403".into(),
+            }));
+        };
+        resolved(&mut ctl);
+        ctl.app.playback.as_mut().unwrap().elapsed = Duration::from_secs(60);
+
+        err(&mut ctl);
+        assert_eq!(
+            ctl.app.queue.current_index(),
+            Some(0),
+            "same track, fresh link"
+        );
+        assert!(ctl.app.resolving.is_some());
+        assert_eq!(ctl.app.player_view().elapsed, Duration::from_secs(60));
+        rec.take();
+        resolved(&mut ctl);
+        assert!(rec.take().iter().any(|c| c == "seek 60"));
+        assert_eq!(ctl.resume, None);
+
+        // Failing again right away moves on instead of retrying forever.
+        err(&mut ctl);
+        assert_eq!(ctl.app.queue.current_index(), Some(1));
     }
 
     #[test]

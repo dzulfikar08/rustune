@@ -13,6 +13,10 @@ use ureq::{Agent, BodyReader};
 
 /// Forward seeks up to this many bytes read through instead of reconnecting.
 const SKIP_READ_MAX: u64 = 128 * 1024;
+/// Largest byte range asked for in one request. YouTube's servers throttle a
+/// request for more than 10 MiB (or an open-ended one) to about 32 KB/s after
+/// the first 160 KiB, which starves playback; smaller ranges come at full speed.
+const CHUNK: u64 = 8 * 1024 * 1024;
 const PLAYLIST_MAX: u64 = 64 * 1024;
 
 static AGENT: LazyLock<Agent> = LazyLock::new(|| {
@@ -88,25 +92,31 @@ impl<R: Read + Send> MediaSource for LiveSource<R> {
     }
 }
 
-/// Seekable HTTP resource read through `Range` requests, reconnecting once on
-/// a dropped connection.
+/// Seekable HTTP resource read through `Range` requests of at most `CHUNK`
+/// bytes, reconnecting once on a dropped connection.
 pub struct RangeReader {
     url: String,
     len: u64,
     pos: u64,
     body: Option<SyncRead<BodyReader<'static>>>,
+    /// Where the open connection's range ends (exclusive).
+    end: u64,
     /// Connections opened (for tests and diagnostics).
     connects: u32,
 }
 
 impl RangeReader {
-    /// Wrap an already-open response body positioned at offset 0.
-    fn with_body(url: String, len: u64, body: BodyReader<'static>) -> Self {
+    /// A resource of `len` bytes. The response that found it (`body`, at
+    /// offset 0) is read on only when it is small enough to come in one
+    /// chunk; otherwise reading starts with a bounded range request.
+    fn new(url: String, len: u64, body: BodyReader<'static>) -> Self {
+        let small = len <= CHUNK;
         Self {
             url,
             len,
             pos: 0,
-            body: Some(SyncRead::new(body)),
+            body: small.then(|| SyncRead::new(body)),
+            end: if small { len } else { 0 },
             connects: 1,
         }
     }
@@ -119,6 +129,7 @@ impl RangeReader {
             len: 0,
             pos: 0,
             body: None,
+            end: 0,
             connects: 0,
         };
         r.connect()?;
@@ -132,9 +143,12 @@ impl RangeReader {
 
     fn connect(&mut self) -> io::Result<()> {
         self.body = None;
+        // Until the length is known (test `open`), ask for one chunk.
+        let limit = if self.len > 0 { self.len } else { u64::MAX };
+        let end = self.pos.saturating_add(CHUNK).min(limit);
         let resp = AGENT
             .get(&self.url)
-            .header("Range", format!("bytes={}-", self.pos))
+            .header("Range", format!("bytes={}-{}", self.pos, end - 1))
             .call()
             .map_err(io_err)?;
         self.connects += 1;
@@ -158,6 +172,9 @@ impl RangeReader {
                 )))
             }
         }
+        // A server that sends more than asked for (a 200, or a 206 past
+        // `end`) is simply read on.
+        self.end = end.min(self.len);
         self.body = Some(SyncRead::new(resp.into_body().into_reader()));
         Ok(())
     }
@@ -178,6 +195,10 @@ impl Read for RangeReader {
                 }
             };
             match body.read(buf) {
+                Ok(0) if self.pos >= self.end => {
+                    // This chunk is done: request the next one.
+                    self.body = None;
+                }
                 Ok(0) if !retried => {
                     // Premature end (connection dropped): resume at `pos`.
                     retried = true;
@@ -314,7 +335,7 @@ pub fn open(url: &str) -> anyhow::Result<HttpSource> {
         let body = resp.into_body().into_reader();
         let opened = match (icy_metaint, ranges, len) {
             (None, true, Some(len)) if len > 0 => {
-                Opened::Seekable(RangeReader::with_body(url.clone(), len, body))
+                Opened::Seekable(RangeReader::new(url.clone(), len, body))
             }
             _ => Opened::Stream { body, icy_metaint },
         };
@@ -448,16 +469,15 @@ pub(crate) mod test_server {
         }
         let req = String::from_utf8_lossy(&req).to_string();
         let path = req.split_whitespace().nth(1).unwrap_or("/").to_owned();
-        let range_start = req.lines().find_map(|l| {
+        // `bytes=START-` or `bytes=START-END` (inclusive end).
+        let range = req.lines().find_map(|l| {
             let (k, v) = l.split_once(':')?;
             if !k.trim().eq_ignore_ascii_case("range") {
                 return None;
             }
-            v.trim()
-                .strip_prefix("bytes=")?
-                .trim_end_matches('-')
-                .parse::<usize>()
-                .ok()
+            let (start, end) = v.trim().strip_prefix("bytes=")?.split_once('-')?;
+            let start = start.parse::<usize>().ok()?;
+            Some((start, end.parse::<usize>().ok()))
         });
         let Some(route) = routes.iter().find(|r| r.path == path) else {
             let _ = s.write_all(
@@ -466,16 +486,17 @@ pub(crate) mod test_server {
             return;
         };
         let mut head = String::new();
-        let body: &[u8] = match (route.ranges, range_start) {
-            (true, Some(start)) if start < route.body.len() => {
+        let body: &[u8] = match (route.ranges, range) {
+            (true, Some((start, end))) if start < route.body.len() => {
+                let last = end.unwrap_or(usize::MAX).min(route.body.len() - 1);
                 head.push_str("HTTP/1.1 206 Partial Content\r\n");
                 head.push_str(&format!(
                     "Content-Range: bytes {}-{}/{}\r\n",
                     start,
-                    route.body.len() - 1,
+                    last,
                     route.body.len()
                 ));
-                &route.body[start..]
+                &route.body[start..=last]
             }
             _ => {
                 head.push_str("HTTP/1.1 200 OK\r\n");
@@ -553,6 +574,42 @@ mod tests {
         // Seeking past the end reads nothing.
         r.seek(SeekFrom::Start(700_000)).unwrap();
         assert_eq!(r.read(&mut b).unwrap(), 0);
+    }
+
+    #[test]
+    fn large_resources_are_read_in_bounded_chunks() {
+        let len = CHUNK as usize * 2 + 1234;
+        let body = data(len);
+        let srv = serve(vec![route("/big.m4a", body.clone(), true)]);
+        let Opened::Seekable(mut r) = open(&format!("{}/big.m4a", srv.base)).unwrap().opened else {
+            panic!("expected a seekable source");
+        };
+        assert_eq!(r.byte_len(), Some(len as u64));
+        let mut all = Vec::new();
+        r.read_to_end(&mut all).unwrap();
+        assert!(all == body, "every chunk joins up");
+        // The probe, then three chunks; none past the resource's end.
+        assert_eq!(r.connects(), 4);
+        assert_eq!(srv.requests.load(Ordering::SeqCst), 4);
+
+        // A seek reconnects with one chunk from there.
+        r.seek(SeekFrom::Start(CHUNK + 10)).unwrap();
+        let mut b = [0u8; 10];
+        r.read_exact(&mut b).unwrap();
+        assert_eq!(&b[..], &body[CHUNK as usize + 10..CHUNK as usize + 20]);
+    }
+
+    #[test]
+    fn small_resources_keep_the_first_response() {
+        let body = data(600_000);
+        let srv = serve(vec![route("/s.mp3", body.clone(), true)]);
+        let Opened::Seekable(mut r) = open(&format!("{}/s.mp3", srv.base)).unwrap().opened else {
+            panic!("expected a seekable source");
+        };
+        let mut all = Vec::new();
+        r.read_to_end(&mut all).unwrap();
+        assert!(all == body);
+        assert_eq!(srv.requests.load(Ordering::SeqCst), 1);
     }
 
     #[test]

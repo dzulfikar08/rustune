@@ -53,20 +53,42 @@ fn parse_search_output(stdout: &str) -> Vec<MediaItem> {
 /// for the whole track. HLS/Opus-only sources still fall through to `bestaudio`.
 const NATIVE_FIRST_FORMAT: &str = "bestaudio[ext=m4a][protocol^=http]/bestaudio[acodec^=mp4a][protocol^=http]/bestaudio[acodec=mp3][protocol^=http]/bestaudio[protocol^=http]/bestaudio/best";
 
-/// `--print urls --print title` output: the stream URL, then the page
-/// title (used when `fallback_title` is empty).
-fn parse_resolve_output(stdout: &str, fallback_title: &str) -> Result<StreamInfo> {
+/// Longest wait for a link YouTube has not released yet. Its TV clients hold
+/// links back for the length of a skippable pre-roll ad (about 5 s).
+const MAX_AVAILABILITY_WAIT: Duration = Duration::from_secs(15);
+
+/// `--print available_at --print urls --print title` output: when the link
+/// starts working (Unix seconds, `NA` when it already does), the stream URL,
+/// then the page title (used when `fallback_title` is empty).
+fn parse_resolve_output(stdout: &str, fallback_title: &str) -> Result<(StreamInfo, Option<f64>)> {
     let mut lines = stdout.lines().map(str::trim).filter(|l| !l.is_empty());
+    let available_at = lines.next().and_then(|l| l.parse::<f64>().ok());
     let url = lines
         .next()
         .filter(|l| l.contains("://"))
         .context("No stream URL returned")?;
     let page_title = lines.collect::<Vec<_>>().join(" ");
-    Ok(StreamInfo {
+    let info = StreamInfo {
         url: url.to_string(),
         title: fallback_title.to_string(),
         page_title: (!page_title.is_empty()).then_some(page_title),
-    })
+    };
+    Ok((info, available_at))
+}
+
+/// How long to wait before the link may be fetched: YouTube answers 403 to
+/// every request before `available_at`, which would fail the track.
+fn availability_wait(available_at: Option<f64>, now: f64) -> Duration {
+    match available_at {
+        Some(at) if at > now => Duration::from_secs_f64(at - now).min(MAX_AVAILABILITY_WAIT),
+        _ => Duration::ZERO,
+    }
+}
+
+fn unix_now() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64())
 }
 
 fn command() -> tokio::process::Command {
@@ -103,7 +125,8 @@ impl Extractor for YtdlpExtractor {
     fn resolve<'a>(&'a self, id: &'a str, title: &'a str) -> BoxFuture<'a, Result<StreamInfo>> {
         Box::pin(async move {
             let url = page_url(id);
-            // `urls` first: one line per format (one here), then the title.
+            // `available_at`, then `urls` (one line per format, one here),
+            // then the title.
             let output = tokio::time::timeout(
                 self.timeout,
                 command()
@@ -114,7 +137,8 @@ impl Extractor for YtdlpExtractor {
                         "--playlist-items",
                         "1",
                     ])
-                    .args(["--print", "urls", "--print", "title", "--"])
+                    .args(["--print", "available_at", "--print", "urls"])
+                    .args(["--print", "title", "--"])
                     .arg(url.as_ref())
                     .output(),
             )
@@ -125,7 +149,12 @@ impl Extractor for YtdlpExtractor {
             if !output.status.success() {
                 anyhow::bail!("Stream extraction failed: {}", stderr_tail(&output.stderr));
             }
-            parse_resolve_output(&String::from_utf8_lossy(&output.stdout), title)
+            let (info, available_at) =
+                parse_resolve_output(&String::from_utf8_lossy(&output.stdout), title)?;
+            // Skipping the track aborts this task, so the wait never blocks
+            // the next one.
+            tokio::time::sleep(availability_wait(available_at, unix_now())).await;
+            Ok(info)
         })
     }
 
@@ -229,13 +258,29 @@ WARNING: something
 
     #[test]
     fn resolve_output_gives_the_stream_and_page_title() {
-        let info = parse_resolve_output("https://cdn.example/a.m4a\nSome Song\n", "").unwrap();
+        let (info, at) =
+            parse_resolve_output("1794021615\nhttps://cdn.example/a.m4a\nSome Song\n", "").unwrap();
         assert_eq!(info.url, "https://cdn.example/a.m4a");
         assert_eq!(info.page_title.as_deref(), Some("Some Song"));
-        let kept = parse_resolve_output("https://cdn.example/a.m4a\n", "Known").unwrap();
-        assert_eq!((kept.title.as_str(), kept.page_title), ("Known", None));
+        assert_eq!(at, Some(1794021615.0));
+        let (kept, at) = parse_resolve_output("NA\nhttps://cdn.example/a.m4a\n", "Known").unwrap();
+        assert_eq!(
+            (kept.title.as_str(), kept.page_title, at),
+            ("Known", None, None)
+        );
         assert!(parse_resolve_output("", "x").is_err());
-        assert!(parse_resolve_output("NA\n", "x").is_err());
+        assert!(parse_resolve_output("NA\nNA\n", "x").is_err());
+    }
+
+    #[test]
+    fn waits_until_the_link_is_released() {
+        assert_eq!(availability_wait(None, 100.0), Duration::ZERO);
+        assert_eq!(availability_wait(Some(90.0), 100.0), Duration::ZERO);
+        assert_eq!(
+            availability_wait(Some(104.5), 100.0),
+            Duration::from_millis(4500)
+        );
+        assert_eq!(availability_wait(Some(1e12), 100.0), MAX_AVAILABILITY_WAIT);
     }
 
     #[test]
